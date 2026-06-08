@@ -1,9 +1,9 @@
 {
-  "ui_version": "KAG_OPERATIONAL_PLATFORM_FULL_CYCLE_1000_3_CONFIRMED",
+  "ui_version": "KAG-BUILD-2026-06-09-v7-REPORTS-FIXED",
   "home_file": "public/index.html",
   "description_ar": "نسخة محدثة بألوان تنفيذية هادئة وفاخرة، مع تقليل النيون وتوحيد ألوان الحالة والمراكز.",
   "mobileResponsive": "enabled",
-  "version": "1000.6.0",
+  "version": "1000.7.0",
   "features": [
     "مركز الإطلاق التشغيلي",
     "بوابات القبول",
@@ -18,5 +18,12 @@
     "تباين أفضل للعرض الإداري"
   ],
   "name": "KAG Operational Platform — Executive Color Refresh",
-  "phase": "EXECUTIVE_COLOR_REFRESH_FINAL"
+  "phase": "EXECUTIVE_COLOR_REFRESH_FINAL",
+  "build_date": "2026-06-09",
+  "changes": [
+    "حذف مربع أحمد العامودي",
+    "تفعيل زر تجهيز التقارير الأربعة",
+    "CSV download مباشر من المتصفح",
+    "إصلاح cache headers"
+  ]
 }

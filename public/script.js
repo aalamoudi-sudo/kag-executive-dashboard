@@ -1,3 +1,4 @@
+// KAG-BUILD-2026-06-09-v7 | MD5-CHECK: c9e6951704d9118a3c3b3c8f6095a5c9
 (() => {
   "use strict";
 
@@ -281,17 +282,42 @@
     $("refreshBtn")?.addEventListener("click", refreshNow);
     $("notifyForm")?.addEventListener("submit", onNotifySubmit);
     $("notifyMode")?.addEventListener("change", renderNotificationRecipients);
-    document.body.addEventListener("click", async e=>{
-      const action=e.target.closest("[data-action-update]");
-      if(action){ try{ await actionUpdate(action.dataset.id, action.dataset.status); }catch(err){ toast(err.message); } }
-      const approval=e.target.closest("[data-approval-update]");
-      if(approval){ try{ await approvalUpdate(approval.dataset.id, approval.dataset.status); }catch(err){ toast(err.message); } }
-      const it=e.target.closest("[data-integration-test]");
-      if(it){ await testIntegrations(); }
-    });
     let deferredInstall=null;
     window.addEventListener("beforeinstallprompt", e=>{ e.preventDefault(); deferredInstall=e; $("installAppBtn")?.classList.add("install-ready"); });
     $("installAppBtn")?.addEventListener("click", async()=>{ if(deferredInstall){ deferredInstall.prompt(); deferredInstall=null; } else toast("يمكن إضافة المنصة إلى الشاشة الرئيسية من خيارات المتصفح"); });
+
+    // ============================================================
+    // handler واحد موحّد — يتعامل مع كل نقرات الجسم
+    // ============================================================
+    function doGenerateReport(rtype, rname, btnEl){
+      if(btnEl){ btnEl.disabled=true; btnEl.textContent="⏳ جارٍ التجهيز..."; }
+      try{
+        const lines = buildAndDownloadCSV(rtype, rname);
+        toast(`✅ ${rname} — تم التنزيل (${lines} سطر بيانات)`);
+      }catch(err){
+        toast(`❌ فشل التوليد: ${err.message}`);
+      }finally{
+        if(btnEl){ setTimeout(()=>{ btnEl.disabled=false; btnEl.textContent="⬇ تجهيز"; }, 400); }
+      }
+    }
+
+    document.body.addEventListener("click", async e=>{
+      // مهام / اعتمادات
+      const action=e.target.closest("[data-action-update]");
+      if(action){ try{ await actionUpdate(action.dataset.id, action.dataset.status); }catch(er){ toast(er.message); } return; }
+      const approval=e.target.closest("[data-approval-update]");
+      if(approval){ try{ await approvalUpdate(approval.dataset.id, approval.dataset.status); }catch(er){ toast(er.message); } return; }
+      const it=e.target.closest("[data-integration-test]");
+      if(it){ await testIntegrations(); return; }
+
+      // أزرار التقارير الفردية
+      const tileBtn=e.target.closest(".btn-report-tile");
+      if(tileBtn){ await doGenerateReport(tileBtn.dataset.rtype, tileBtn.dataset.rname, tileBtn); return; }
+
+      // زر التقرير الشامل
+      const compBtn=e.target.closest(".btn-make-report");
+      if(compBtn){ await doGenerateReport("comprehensive","تقرير-شامل",compBtn); return; }
+    });
   }
 
   function renderAll(){
@@ -435,16 +461,213 @@
     const rows=decisionSeed().slice(0,6);
     $("dailyPage").innerHTML = `${card("حكم اليوم", appMetrics().critical>2?"اليوم يحتاج إغلاق قرارات حرجة":"اليوم تحت السيطرة", "")}${card("عدد إجراءات اليوم", rows.length, "")}${card("أولوية اليوم", "المخاطر · التصاريح · الموردين", "")}<article class="deep-card full"><h3>إجراءات اليوم</h3><table class="data-table"><thead><tr><th>الإجراء</th><th>المالك</th><th>الأولوية</th><th>الموعد</th></tr></thead><tbody>${rows.map(r=>`<tr><td>${esc(r.action)}</td><td>${esc(r.owner)}</td><td><b class="pill ${priorityClass(r.urgent)}">${r.urgent}</b></td><td>${esc(r.due)}</td></tr>`).join("")}</tbody></table></article>`;
   }
+  // ─── بناء CSV من البيانات الحية وتنزيله مباشرة ───
+  function buildAndDownloadCSV(rtype, rname){
+    const m    = appMetrics();
+    const mg   = getManagement();
+    const tracks = getTracks();
+    const items  = getItems();
+    const today  = new Date().toISOString().slice(0,10);
+    const dateStr= today;
+    const e = v => `"${String(v??'').replace(/"/g,'""')}"`;
+    let sections = [];
+
+    // ── دالة مساعدة: قسم ببيانات ──
+    const sec = (title, headers, rows) => {
+      if(!rows.length) rows = [headers.map(()=>'لا توجد بيانات')];
+      sections.push('');
+      sections.push(e('■ ' + title));
+      sections.push(headers.map(e).join(','));
+      rows.forEach(r => sections.push(r.map(e).join(',')));
+    };
+
+    // ── الغلاف ──
+    sections.push(e('تقرير: ' + rname));
+    sections.push(e('التاريخ: ' + today));
+    sections.push(e('المشروع: حدائق الملك عبدالله 2026'));
+    sections.push(e('الإنجاز العام: ' + m.progress + '%  |  مؤشر الأثر: ' + m.impact + '  |  المخاطر الحرجة: ' + m.critical));
+
+    if(rtype === 'daily_ops' || rtype === 'comprehensive'){
+      // ── مؤشرات اليوم ──
+      sec('مؤشرات اليوم',
+        ['المؤشر','القيمة'],
+        [
+          ['الإنجاز العام', m.progress + '%'],
+          ['مؤشر الأثر', m.impact],
+          ['المخاطر الحرجة', m.critical],
+          ['المخاطر المتوسطة', m.medium],
+          ['القرارات المفتوحة', m.decisions],
+          ['مستوى تجربة الزائر', (m.visitor/20).toFixed(1) + ' / 5'],
+          ['سلامة البيانات', m.dataHealth + '%'],
+          ['إجمالي العناصر', m.items],
+          ['عدد المسارات', m.tracks],
+        ]
+      );
+      // ── حالة المسارات ──
+      sec('حالة المسارات',
+        ['المسار','الاسم','التقدم%','المخطط%','الفرق','المهام','منجز','نشط','مخاطر','الحالة','المالك'],
+        tracks.map(t=>[t.id,t.name,t.progress,t.planned||80,(t.progress-(t.planned||80)),t.tasks||0,t.done||0,t.active||0,t.risk||0,t.status,t.lead||'—'])
+      );
+      // ── إجراءات اليوم ──
+      const actions = mg.actions||[];
+      const todayActions = actions.filter(a=>a.status!=='مغلق').slice(0,20);
+      sec('إجراءات اليوم',
+        ['العنوان','المسار','المالك','الأولوية','الموعد','الحالة'],
+        todayActions.length ? todayActions.map(a=>[a.title,a.track,a.owner,a.priority,a.due,a.status])
+          : [['لا توجد إجراءات مفتوحة','','','','','']]
+      );
+      // ── المخاطر الحرجة ──
+      const risks = items.filter(i=>isRisk(i)).slice(0,15);
+      sec('المخاطر',
+        ['العنوان','المسار','المالك','الحالة','الموعد','النوع'],
+        risks.length ? risks.map(r=>[r.title,r.track,r.owner||'—',r.status,r.due||'—',r.type||'مخاطرة'])
+          : [['لا توجد مخاطر مفتوحة','','','','','']]
+      );
+    }
+
+    if(rtype === 'executive' || rtype === 'comprehensive'){
+      // ── ملخص تنفيذي ──
+      sec('الملخص التنفيذي',
+        ['المؤشر','القيمة'],
+        [
+          ['تاريخ التقرير', today],
+          ['الإنجاز الكلي للمسارات', m.progress + '%'],
+          ['المخطط', (tracks[0]?.planned||80) + '%'],
+          ['الفرق عن المخطط', (m.progress - (tracks[0]?.planned||80)) + '%'],
+          ['عدد المسارات', tracks.length],
+          ['مؤشر الأثر التنفيذي', m.impact],
+          ['أعلى مسار إنجازاً', tracks.sort((a,b)=>b.progress-a.progress)[0]?.name||'—'],
+          ['أقل مسار إنجازاً', tracks.sort((a,b)=>a.progress-b.progress)[0]?.name||'—'],
+        ]
+      );
+      // ── أداء المسارات ──
+      sec('أداء المسارات',
+        ['المسار','الاسم','الإنجاز%','المخطط%','المهام','المنجز','النشط','المخاطر','الحالة'],
+        tracks.map(t=>[t.id,t.name,t.progress,t.planned||80,t.tasks||0,t.done||0,t.active||0,t.risk||0,t.status])
+      );
+      // ── القرارات ──
+      const decisions = decisionSeed().slice(0,12);
+      sec('القرارات والإجراءات',
+        ['الإجراء','المسار','المالك','الأولوية','الموعد','الأثر'],
+        decisions.length ? decisions.map(d=>[d.action,d.track,d.owner,d.urgent,d.due,d.impact])
+          : [['لا توجد قرارات معلقة','','','','','']]
+      );
+      // ── المخاطر الحرجة ──
+      const crit = items.filter(i=>isRisk(i) && /خطر|حرج|معرضة/i.test(i.status||'')).slice(0,10);
+      sec('المخاطر الحرجة للجنة التنفيذية',
+        ['المخاطرة','المسار','المالك','الحالة','الموعد'],
+        crit.length ? crit.map(r=>[r.title,r.track,r.owner||'—',r.status,r.due||'—'])
+          : [['لا توجد مخاطر حرجة','','','','']]
+      );
+    }
+
+    if(rtype === 'approvals' || rtype === 'comprehensive'){
+      const approvals = mg.approvals||[];
+      const late = approvals.filter(a=>a.status==='متأخر');
+      const pending = approvals.filter(a=>a.status!=='معتمد');
+      sec('الاعتمادات والتصعيد',
+        ['الاعتماد','النوع','المسار','المالك','الموعد','الأثر','الحالة'],
+        approvals.length ? approvals.map(a=>[a.title,a.type||'—',a.track,a.owner,a.due,a.impact,a.status])
+          : [['لا توجد اعتمادات بانتظار الإجراء','','','','','','']]
+      );
+      sec('الاعتمادات المتأخرة',
+        ['الاعتماد','المسار','المالك','الموعد','الحالة'],
+        late.length ? late.map(a=>[a.title,a.track,a.owner,a.due,a.status])
+          : [['لا توجد اعتمادات متأخرة','','','','']]
+      );
+      // التصعيد
+      const tasks = mg.actions||[];
+      const escalated = tasks.filter(t=>{
+        if(!t.due) return false;
+        const diff = Math.floor((new Date(t.due).getTime()-Date.now())/86400000);
+        return diff < 0 && t.status !== 'مغلق';
+      });
+      sec('حالات التصعيد',
+        ['العنوان','المسار','المالك','الأولوية','أيام التأخير','الموعد','الحالة'],
+        escalated.length ? escalated.map(t=>{
+          const days = Math.abs(Math.floor((new Date(t.due).getTime()-Date.now())/86400000));
+          return [t.title,t.track,t.owner,t.priority,days,t.due,t.status];
+        }) : [['لا توجد حالات تصعيد','','','','','','']]
+      );
+    }
+
+    if(rtype === 'evidence' || rtype === 'comprehensive'){
+      const fe = mg.fieldEvidence||[];
+      const approved = fe.filter(x=>x.status==='معتمد');
+      const pending  = fe.filter(x=>x.status!=='معتمد');
+      sec('الأدلة الميدانية',
+        ['الدليل','النوع','المسار','المنطقة','التاريخ','الحالة'],
+        fe.length ? fe.map(x=>[x.title,x.type,x.track,x.zone||'—',x.date||'—',x.status])
+          : [['لا توجد أدلة ميدانية مسجلة','','','','','']]
+      );
+      sec('الأدلة المعتمدة',
+        ['الدليل','المسار','المنطقة','التاريخ'],
+        approved.length ? approved.map(x=>[x.title,x.track,x.zone||'—',x.date||'—'])
+          : [['لا توجد أدلة معتمدة','','','']]
+      );
+      sec('أدلة بانتظار مراجعة',
+        ['الدليل','المسار','المنطقة','التاريخ'],
+        pending.length ? pending.map(x=>[x.title,x.track,x.zone||'—',x.date||'—'])
+          : [['جميع الأدلة معتمدة','','','']]
+      );
+      // المهام المغلقة كأدلة إغلاق
+      const closed = items.filter(i=>done(i)).slice(0,20);
+      sec('مهام مغلقة — أدلة إغلاق',
+        ['المهمة','المسار','المالك','الموعد','النوع'],
+        closed.length ? closed.map(i=>[i.title,i.track,i.owner||'—',i.due||'—',i.type||'—'])
+          : [['لا توجد مهام مغلقة','','','','']]
+      );
+    }
+
+    const bom  = '\uFEFF';
+    const csv  = sections.join('\n');
+    const blob = new Blob([bom + csv], {type:'text/csv;charset=utf-8'});
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href = url;
+    a.download = `KAGA-${rname.replace(/\s+/g,'-')}-${dateStr}.csv`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    return sections.length;
+  }
+
   function renderReports(){
     const m=appMetrics(); const mg=getManagement();
-    $("reportsPage").innerHTML = `${card("تقرير يومي", "PDF / PPTX", "")} ${card("تقرير أسبوعي", "تنفيذي", "")} ${card("تقرير مسار", "حسب المالك", "")}
-    <article class="deep-card full"><h3>مركز التقارير</h3><p class="muted">التقارير تسحب المؤشرات، القرارات، المخاطر، المهام المتأخرة، الاعتمادات، الأدلة، والتوصيات التشغيلية.</p>
-      <div class="report-grid">
-        ${[["تقرير غرفة العمليات اليومي",`يتضمن ${mg.actions?.length||0} مهمة و${m.critical} مخاطر حرجة`],["تقرير اللجنة التنفيذية",`جاهزية المسارات ${m.progress}% ومؤشر الأثر ${m.impact}`],["تقرير الاعتمادات والتصعيد",`${(mg.approvals||[]).filter(x=>x.status==='متأخر').length} اعتمادات متأخرة`],["تقرير الأدلة الميدانية",`${(mg.fieldEvidence||[]).length} دليل ميداني مصنف`]].map(r=>`<div class="report-tile"><b>${r[0]}</b><span>${r[1]}</span><button class="customize">تجهيز</button></div>`).join("")}
-      </div><button class="customize" id="makeReport">توليد تقرير شامل</button></article>`;
-    $("makeReport")?.addEventListener("click", async()=>{
-      try{ const res=await fetch("/api/report",{method:"POST",credentials:"include",headers:{"Content-Type":"application/json"},body:JSON.stringify({type:"comprehensive"})}); if(!res.ok) throw new Error("تعذر توليد التقرير"); const blob=await res.blob(); const url=URL.createObjectURL(blob); const a=document.createElement("a"); a.href=url; a.download="KAG-Report.pptx"; a.click(); URL.revokeObjectURL(url); }catch(e){ toast(e.message); }
-    });
+    const lateApprovals = (mg.approvals||[]).filter(x=>x.status==='متأخر').length;
+    const evidenceCount = (mg.fieldEvidence||[]).length;
+    const actionsCount  = (mg.actions||[]).length;
+    $("reportsPage").innerHTML = `
+      ${card("مؤشر الأثر", m.impact, "")}
+      ${card("جاهزية المسارات", m.progress + "%", "")}
+      ${card("مخاطر حرجة", m.critical, "")}
+      <article class="deep-card full">
+        <h3>مركز التقارير</h3>
+        <p class="muted">كل تقرير يسحب البيانات الفعلية من النظام لحظة الضغط على تجهيز ويُنزّل ملف CSV مباشرةً.</p>
+        <div class="report-grid">
+          <div class="report-tile">
+            <b>تقرير غرفة العمليات اليومي</b>
+            <span>يتضمن ${actionsCount} مهمة و${m.critical} مخاطر حرجة</span>
+            <button class="customize btn-report-tile" data-rtype="daily_ops" data-rname="تقرير-غرفة-العمليات-اليومي">⬇ تجهيز</button>
+          </div>
+          <div class="report-tile">
+            <b>تقرير اللجنة التنفيذية</b>
+            <span>جاهزية المسارات ${m.progress}% ومؤشر الأثر ${m.impact}</span>
+            <button class="customize btn-report-tile" data-rtype="executive" data-rname="تقرير-اللجنة-التنفيذية">⬇ تجهيز</button>
+          </div>
+          <div class="report-tile">
+            <b>تقرير الاعتمادات والتصعيد</b>
+            <span>${lateApprovals} اعتمادات متأخرة</span>
+            <button class="customize btn-report-tile" data-rtype="approvals" data-rname="تقرير-الاعتمادات-والتصعيد">⬇ تجهيز</button>
+          </div>
+          <div class="report-tile">
+            <b>تقرير الأدلة الميدانية</b>
+            <span>${evidenceCount} دليل ميداني مصنف</span>
+            <button class="customize btn-report-tile" data-rtype="evidence" data-rname="تقرير-الأدلة-الميدانية">⬇ تجهيز</button>
+          </div>
+        </div>
+        <button class="customize btn-make-report" style="margin-top:12px">⬇ توليد تقرير شامل (جميع الأقسام)</button>
+      </article>`;
+    // لا يوجد addEventListener هنا — الربط يتم عبر event delegation في bind()
   }
 
   function renderOperationalSummary(){

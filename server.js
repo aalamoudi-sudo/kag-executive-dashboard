@@ -845,7 +845,7 @@ function serveStatic(req,res){
   if(filePath!==PUBLIC_DIR && !filePath.startsWith(PUBLIC_DIR+path.sep)){ res.writeHead(403); return res.end("Forbidden"); }
   fs.stat(filePath,(err,stat)=>{
     if(err||!stat.isFile()){ res.writeHead(404); return res.end("Not found"); }
-    const cache = /\.(png|jpg|jpeg|svg|ico)$/i.test(filePath) ? "public, max-age=3600" : "no-cache";
+    const cache = /\.(png|jpg|jpeg|svg|ico)$/i.test(filePath) ? "public, max-age=3600" : "no-store, no-cache, must-revalidate, proxy-revalidate";
     res.writeHead(200,{"Content-Type":mimeType(filePath),"Cache-Control":cache});
     fs.createReadStream(filePath).pipe(res);
   });
