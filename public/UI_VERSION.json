@@ -1,29 +1,35 @@
 {
-  "ui_version": "KAG-BUILD-2026-06-09-v7-REPORTS-FIXED",
+  "ui_version": "KAG-BUILD-2026-06-09-v8-PDF-PPT-REPORTS",
   "home_file": "public/index.html",
-  "description_ar": "نسخة محدثة بألوان تنفيذية هادئة وفاخرة، مع تقليل النيون وتوحيد ألوان الحالة والمراكز.",
+  "description_ar": "نسخة معدلة بحيث يتم توليد التقارير الرسمية مباشرة بصيغة PDF أو PowerPoint وفق القوالب المعتمدة، دون تنزيل Excel أو CSV من مركز التقارير.",
   "mobileResponsive": "enabled",
-  "version": "1000.7.0",
+  "version": "1000.8.1-report-output-hardened",
   "features": [
-    "مركز الإطلاق التشغيلي",
     "بوابات القبول",
     "خطة تشغيل أول أسبوع",
-    "فحص جاهزية النشر",
+    "إلغاء CSV من مركز التقارير",
+    "مركز الإطلاق التشغيلي",
+    "مولد PDF احتياطي عند عدم توفر LibreOffice",
+    "تقارير PowerPoint قابلة للتعديل",
     "نسخ وتصدير",
-    "PWA",
-    "مركز الإشعارات والمهام",
-    "هوية ألوان تنفيذية",
     "تقليل تأثير النيون",
+    "PWA",
+    "تباين أفضل للعرض الإداري",
+    "هوية ألوان تنفيذية",
+    "تقارير PDF مباشرة",
+    "مركز الإشعارات والمهام",
     "توحيد ألوان الحالة",
-    "تباين أفضل للعرض الإداري"
+    "فحص جاهزية النشر"
   ],
-  "name": "KAG Operational Platform — Executive Color Refresh",
-  "phase": "EXECUTIVE_COLOR_REFRESH_FINAL",
+  "name": "KAG Operational Platform — PDF / PowerPoint Reports",
+  "phase": "OFFICIAL_REPORTS_OUTPUT_FINAL",
   "build_date": "2026-06-09",
   "changes": [
-    "حذف مربع أحمد العامودي",
-    "تفعيل زر تجهيز التقارير الأربعة",
-    "CSV download مباشر من المتصفح",
-    "إصلاح cache headers"
-  ]
+    "استبدال CSV في مركز التقارير بخيارات PDF وPowerPoint",
+    "إضافة format=pdf / format=pptx إلى /api/report",
+    "دمج بيانات المهام والإشعارات والاعتمادات والأدلة داخل التقارير",
+    "إضافة مولد PDF مباشر احتياطي لضمان إخراج التقرير دون ملفات Excel وسيطة",
+    "تحديث متطلبات Python للتقارير الرسمية"
+  ],
+  "reportOutputs": "PDF/PPTX only in UI; CSV hidden from user-facing screens"
 }

@@ -289,38 +289,37 @@
     // ============================================================
     // handler واحد موحّد — يتعامل مع كل نقرات الجسم
     // ============================================================
-    async function doGenerateReport(rtype, rname, btnEl){
-      if(btnEl){ btnEl.disabled=true; btnEl.textContent="⏳ جارٍ التجهيز..."; }
-      const dateStr = new Date().toISOString().slice(0,10);
-      const safeName = (rname||rtype).replace(/\s+/g,"-");
+    async function doGenerateReport(rtype, rname, btnEl, format='pdf'){
+      const originalText = btnEl ? btnEl.textContent : "";
+      const fmt = (format || 'pdf').toLowerCase()==='pptx' ? 'pptx' : 'pdf';
+      if(btnEl){ btnEl.disabled=true; btnEl.textContent=fmt==='pdf' ? "⏳ توليد PDF..." : "⏳ توليد PowerPoint..."; }
       try{
-        // أولاً: حاول PPTX من السيرفر
-        const res = await fetch("/api/report",{
-          method:"POST", credentials:"include",
-          headers:{"Content-Type":"application/json"},
-          body:JSON.stringify({type:rtype})
+        const resp = await fetch('/api/report', {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({type:rtype, format:fmt})
         });
-        if(res.ok){
-          const blob = await res.blob();
-          const url  = URL.createObjectURL(blob);
-          const a    = document.createElement("a");
-          a.href=url; a.download=`KAGA-${safeName}-${dateStr}.pptx`;
-          document.body.appendChild(a); a.click();
-          document.body.removeChild(a); URL.revokeObjectURL(url);
-          toast(`✅ ${rname||rtype} — تم تنزيل PPTX`);
-        } else {
-          // fallback: CSV مباشر من المتصفح
-          const lines = buildAndDownloadCSV(rtype, rname||rtype);
-          toast(`⚠️ تم تنزيل CSV بدلاً من PPTX (${lines} سطر)`);
+        if(!resp.ok){
+          let msg = `فشل توليد التقرير (${resp.status})`;
+          try{ const j=await resp.json(); if(j.error) msg=j.error; }catch(_e){}
+          throw new Error(msg);
         }
+        const blob = await resp.blob();
+        const cd = resp.headers.get('Content-Disposition') || '';
+        const m = cd.match(/filename="?([^";]+)"?/i);
+        const ext = fmt==='pdf' ? 'pdf' : 'pptx';
+        const fallback = `KAGA-${rname.replace(/\s+/g,'-')}-${new Date().toISOString().slice(0,10)}.${ext}`;
+        const filename = m ? m[1] : fallback;
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = filename;
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        toast(`✅ تم توليد ${fmt==='pdf'?'PDF':'PowerPoint'} جاهز للعرض: ${rname}`);
       }catch(err){
-        // network error fallback
-        try{
-          const lines = buildAndDownloadCSV(rtype, rname||rtype);
-          toast(`⚠️ تم تنزيل CSV (${lines} سطر)`);
-        }catch(e2){ toast(`❌ فشل التوليد: ${err.message}`); }
+        toast(`❌ فشل التوليد: ${err.message}`);
       }finally{
-        if(btnEl){ btnEl.disabled=false; btnEl.textContent="⬇ تجهيز"; }
+        if(btnEl){ setTimeout(()=>{ btnEl.disabled=false; btnEl.textContent=originalText || (fmt==='pdf'?'⬇ PDF':'⬇ PowerPoint'); }, 500); }
       }
     }
 
@@ -335,11 +334,11 @@
 
       // أزرار التقارير الفردية
       const tileBtn=e.target.closest(".btn-report-tile");
-      if(tileBtn){ await doGenerateReport(tileBtn.dataset.rtype, tileBtn.dataset.rname, tileBtn); return; }
+      if(tileBtn){ await doGenerateReport(tileBtn.dataset.rtype, tileBtn.dataset.rname, tileBtn, tileBtn.dataset.format || 'pdf'); return; }
 
       // زر التقرير الشامل
       const compBtn=e.target.closest(".btn-make-report");
-      if(compBtn){ await doGenerateReport("comprehensive","تقرير-شامل",compBtn); return; }
+      if(compBtn){ await doGenerateReport("comprehensive","تقرير-شامل",compBtn, compBtn.dataset.format || 'pdf'); return; }
     });
   }
 
@@ -484,175 +483,7 @@
     const rows=decisionSeed().slice(0,6);
     $("dailyPage").innerHTML = `${card("حكم اليوم", appMetrics().critical>2?"اليوم يحتاج إغلاق قرارات حرجة":"اليوم تحت السيطرة", "")}${card("عدد إجراءات اليوم", rows.length, "")}${card("أولوية اليوم", "المخاطر · التصاريح · الموردين", "")}<article class="deep-card full"><h3>إجراءات اليوم</h3><table class="data-table"><thead><tr><th>الإجراء</th><th>المالك</th><th>الأولوية</th><th>الموعد</th></tr></thead><tbody>${rows.map(r=>`<tr><td>${esc(r.action)}</td><td>${esc(r.owner)}</td><td><b class="pill ${priorityClass(r.urgent)}">${r.urgent}</b></td><td>${esc(r.due)}</td></tr>`).join("")}</tbody></table></article>`;
   }
-  // ─── بناء CSV من البيانات الحية وتنزيله مباشرة ───
-  function buildAndDownloadCSV(rtype, rname){
-    const m    = appMetrics();
-    const mg   = getManagement();
-    const tracks = getTracks();
-    const items  = getItems();
-    const today  = new Date().toISOString().slice(0,10);
-    const dateStr= today;
-    const e = v => `"${String(v??'').replace(/"/g,'""')}"`;
-    let sections = [];
-
-    // ── دالة مساعدة: قسم ببيانات ──
-    const sec = (title, headers, rows) => {
-      if(!rows.length) rows = [headers.map(()=>'لا توجد بيانات')];
-      sections.push('');
-      sections.push(e('■ ' + title));
-      sections.push(headers.map(e).join(','));
-      rows.forEach(r => sections.push(r.map(e).join(',')));
-    };
-
-    // ── الغلاف ──
-    sections.push(e('تقرير: ' + rname));
-    sections.push(e('التاريخ: ' + today));
-    sections.push(e('المشروع: حدائق الملك عبدالله 2026'));
-    sections.push(e('الإنجاز العام: ' + m.progress + '%  |  مؤشر الأثر: ' + m.impact + '  |  المخاطر الحرجة: ' + m.critical));
-
-    if(rtype === 'daily_ops' || rtype === 'comprehensive'){
-      // ── مؤشرات اليوم ──
-      sec('مؤشرات اليوم',
-        ['المؤشر','القيمة'],
-        [
-          ['الإنجاز العام', m.progress + '%'],
-          ['مؤشر الأثر', m.impact],
-          ['المخاطر الحرجة', m.critical],
-          ['المخاطر المتوسطة', m.medium],
-          ['القرارات المفتوحة', m.decisions],
-          ['مستوى تجربة الزائر', (m.visitor/20).toFixed(1) + ' / 5'],
-          ['سلامة البيانات', m.dataHealth + '%'],
-          ['إجمالي العناصر', m.items],
-          ['عدد المسارات', m.tracks],
-        ]
-      );
-      // ── حالة المسارات ──
-      sec('حالة المسارات',
-        ['المسار','الاسم','التقدم%','المخطط%','الفرق','المهام','منجز','نشط','مخاطر','الحالة','المالك'],
-        tracks.map(t=>[t.id,t.name,t.progress,t.planned||80,(t.progress-(t.planned||80)),t.tasks||0,t.done||0,t.active||0,t.risk||0,t.status,t.lead||'—'])
-      );
-      // ── إجراءات اليوم ──
-      const actions = mg.actions||[];
-      const todayActions = actions.filter(a=>a.status!=='مغلق').slice(0,20);
-      sec('إجراءات اليوم',
-        ['العنوان','المسار','المالك','الأولوية','الموعد','الحالة'],
-        todayActions.length ? todayActions.map(a=>[a.title,a.track,a.owner,a.priority,a.due,a.status])
-          : [['لا توجد إجراءات مفتوحة','','','','','']]
-      );
-      // ── المخاطر الحرجة ──
-      const risks = items.filter(i=>isRisk(i)).slice(0,15);
-      sec('المخاطر',
-        ['العنوان','المسار','المالك','الحالة','الموعد','النوع'],
-        risks.length ? risks.map(r=>[r.title,r.track,r.owner||'—',r.status,r.due||'—',r.type||'مخاطرة'])
-          : [['لا توجد مخاطر مفتوحة','','','','','']]
-      );
-    }
-
-    if(rtype === 'executive' || rtype === 'comprehensive'){
-      // ── ملخص تنفيذي ──
-      sec('الملخص التنفيذي',
-        ['المؤشر','القيمة'],
-        [
-          ['تاريخ التقرير', today],
-          ['الإنجاز الكلي للمسارات', m.progress + '%'],
-          ['المخطط', (tracks[0]?.planned||80) + '%'],
-          ['الفرق عن المخطط', (m.progress - (tracks[0]?.planned||80)) + '%'],
-          ['عدد المسارات', tracks.length],
-          ['مؤشر الأثر التنفيذي', m.impact],
-          ['أعلى مسار إنجازاً', tracks.sort((a,b)=>b.progress-a.progress)[0]?.name||'—'],
-          ['أقل مسار إنجازاً', tracks.sort((a,b)=>a.progress-b.progress)[0]?.name||'—'],
-        ]
-      );
-      // ── أداء المسارات ──
-      sec('أداء المسارات',
-        ['المسار','الاسم','الإنجاز%','المخطط%','المهام','المنجز','النشط','المخاطر','الحالة'],
-        tracks.map(t=>[t.id,t.name,t.progress,t.planned||80,t.tasks||0,t.done||0,t.active||0,t.risk||0,t.status])
-      );
-      // ── القرارات ──
-      const decisions = decisionSeed().slice(0,12);
-      sec('القرارات والإجراءات',
-        ['الإجراء','المسار','المالك','الأولوية','الموعد','الأثر'],
-        decisions.length ? decisions.map(d=>[d.action,d.track,d.owner,d.urgent,d.due,d.impact])
-          : [['لا توجد قرارات معلقة','','','','','']]
-      );
-      // ── المخاطر الحرجة ──
-      const crit = items.filter(i=>isRisk(i) && /خطر|حرج|معرضة/i.test(i.status||'')).slice(0,10);
-      sec('المخاطر الحرجة للجنة التنفيذية',
-        ['المخاطرة','المسار','المالك','الحالة','الموعد'],
-        crit.length ? crit.map(r=>[r.title,r.track,r.owner||'—',r.status,r.due||'—'])
-          : [['لا توجد مخاطر حرجة','','','','']]
-      );
-    }
-
-    if(rtype === 'approvals' || rtype === 'comprehensive'){
-      const approvals = mg.approvals||[];
-      const late = approvals.filter(a=>a.status==='متأخر');
-      const pending = approvals.filter(a=>a.status!=='معتمد');
-      sec('الاعتمادات والتصعيد',
-        ['الاعتماد','النوع','المسار','المالك','الموعد','الأثر','الحالة'],
-        approvals.length ? approvals.map(a=>[a.title,a.type||'—',a.track,a.owner,a.due,a.impact,a.status])
-          : [['لا توجد اعتمادات بانتظار الإجراء','','','','','','']]
-      );
-      sec('الاعتمادات المتأخرة',
-        ['الاعتماد','المسار','المالك','الموعد','الحالة'],
-        late.length ? late.map(a=>[a.title,a.track,a.owner,a.due,a.status])
-          : [['لا توجد اعتمادات متأخرة','','','','']]
-      );
-      // التصعيد
-      const tasks = mg.actions||[];
-      const escalated = tasks.filter(t=>{
-        if(!t.due) return false;
-        const diff = Math.floor((new Date(t.due).getTime()-Date.now())/86400000);
-        return diff < 0 && t.status !== 'مغلق';
-      });
-      sec('حالات التصعيد',
-        ['العنوان','المسار','المالك','الأولوية','أيام التأخير','الموعد','الحالة'],
-        escalated.length ? escalated.map(t=>{
-          const days = Math.abs(Math.floor((new Date(t.due).getTime()-Date.now())/86400000));
-          return [t.title,t.track,t.owner,t.priority,days,t.due,t.status];
-        }) : [['لا توجد حالات تصعيد','','','','','','']]
-      );
-    }
-
-    if(rtype === 'evidence' || rtype === 'comprehensive'){
-      const fe = mg.fieldEvidence||[];
-      const approved = fe.filter(x=>x.status==='معتمد');
-      const pending  = fe.filter(x=>x.status!=='معتمد');
-      sec('الأدلة الميدانية',
-        ['الدليل','النوع','المسار','المنطقة','التاريخ','الحالة'],
-        fe.length ? fe.map(x=>[x.title,x.type,x.track,x.zone||'—',x.date||'—',x.status])
-          : [['لا توجد أدلة ميدانية مسجلة','','','','','']]
-      );
-      sec('الأدلة المعتمدة',
-        ['الدليل','المسار','المنطقة','التاريخ'],
-        approved.length ? approved.map(x=>[x.title,x.track,x.zone||'—',x.date||'—'])
-          : [['لا توجد أدلة معتمدة','','','']]
-      );
-      sec('أدلة بانتظار مراجعة',
-        ['الدليل','المسار','المنطقة','التاريخ'],
-        pending.length ? pending.map(x=>[x.title,x.track,x.zone||'—',x.date||'—'])
-          : [['جميع الأدلة معتمدة','','','']]
-      );
-      // المهام المغلقة كأدلة إغلاق
-      const closed = items.filter(i=>done(i)).slice(0,20);
-      sec('مهام مغلقة — أدلة إغلاق',
-        ['المهمة','المسار','المالك','الموعد','النوع'],
-        closed.length ? closed.map(i=>[i.title,i.track,i.owner||'—',i.due||'—',i.type||'—'])
-          : [['لا توجد مهام مغلقة','','','','']]
-      );
-    }
-
-    const bom  = '\uFEFF';
-    const csv  = sections.join('\n');
-    const blob = new Blob([bom + csv], {type:'text/csv;charset=utf-8'});
-    const url  = URL.createObjectURL(blob);
-    const a    = document.createElement('a');
-    a.href = url;
-    a.download = `KAGA-${rname.replace(/\s+/g,'-')}-${dateStr}.csv`;
-    document.body.appendChild(a); a.click(); document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-    return sections.length;
-  }
+  // تمت إزالة مولّد CSV القديم من الواجهة نهائيًا: مركز التقارير يستخدم PDF/PowerPoint فقط.
 
   function renderReports(){
     const m=appMetrics(); const mg=getManagement();
@@ -665,30 +496,30 @@
       ${card("مخاطر حرجة", m.critical, "")}
       <article class="deep-card full">
         <h3>مركز التقارير</h3>
-        <p class="muted">كل تقرير يسحب البيانات الفعلية من النظام لحظة الضغط على تجهيز ويُنزّل ملف CSV مباشرةً.</p>
+        <p class="muted">كل تقرير يسحب البيانات الفعلية من النظام ويتم توليده مباشرة بصيغة PDF جاهزة للطباعة أو PowerPoint قابل للتعديل وفق القالب المعتمد، دون تنزيل ملفات Excel أو CSV للمستخدم النهائي.</p>
         <div class="report-grid">
           <div class="report-tile">
             <b>تقرير غرفة العمليات اليومي</b>
             <span>يتضمن ${actionsCount} مهمة و${m.critical} مخاطر حرجة</span>
-            <button class="customize btn-report-tile" data-rtype="daily_ops" data-rname="تقرير-غرفة-العمليات-اليومي">⬇ تجهيز</button>
+            <div class="report-actions"><button class="customize btn-report-tile" data-rtype="daily_ops" data-rname="تقرير-غرفة-العمليات-اليومي" data-format="pdf">⬇ PDF</button><button class="btn-link btn-report-tile" data-rtype="daily_ops" data-rname="تقرير-غرفة-العمليات-اليومي" data-format="pptx">PowerPoint</button></div>
           </div>
           <div class="report-tile">
             <b>تقرير اللجنة التنفيذية</b>
             <span>جاهزية المسارات ${m.progress}% ومؤشر الأثر ${m.impact}</span>
-            <button class="customize btn-report-tile" data-rtype="executive" data-rname="تقرير-اللجنة-التنفيذية">⬇ تجهيز</button>
+            <div class="report-actions"><button class="customize btn-report-tile" data-rtype="executive" data-rname="تقرير-اللجنة-التنفيذية" data-format="pdf">⬇ PDF</button><button class="btn-link btn-report-tile" data-rtype="executive" data-rname="تقرير-اللجنة-التنفيذية" data-format="pptx">PowerPoint</button></div>
           </div>
           <div class="report-tile">
             <b>تقرير الاعتمادات والتصعيد</b>
             <span>${lateApprovals} اعتمادات متأخرة</span>
-            <button class="customize btn-report-tile" data-rtype="approvals" data-rname="تقرير-الاعتمادات-والتصعيد">⬇ تجهيز</button>
+            <div class="report-actions"><button class="customize btn-report-tile" data-rtype="approvals" data-rname="تقرير-الاعتمادات-والتصعيد" data-format="pdf">⬇ PDF</button><button class="btn-link btn-report-tile" data-rtype="approvals" data-rname="تقرير-الاعتمادات-والتصعيد" data-format="pptx">PowerPoint</button></div>
           </div>
           <div class="report-tile">
             <b>تقرير الأدلة الميدانية</b>
             <span>${evidenceCount} دليل ميداني مصنف</span>
-            <button class="customize btn-report-tile" data-rtype="evidence" data-rname="تقرير-الأدلة-الميدانية">⬇ تجهيز</button>
+            <div class="report-actions"><button class="customize btn-report-tile" data-rtype="evidence" data-rname="تقرير-الأدلة-الميدانية" data-format="pdf">⬇ PDF</button><button class="btn-link btn-report-tile" data-rtype="evidence" data-rname="تقرير-الأدلة-الميدانية" data-format="pptx">PowerPoint</button></div>
           </div>
         </div>
-        <button class="customize btn-make-report" style="margin-top:12px">⬇ توليد تقرير شامل (جميع الأقسام)</button>
+        <div class="report-actions full-report-actions"><button class="customize btn-make-report" data-format="pdf" style="margin-top:12px">⬇ توليد التقرير الشامل PDF</button><button class="btn-link btn-make-report" data-format="pptx" style="margin-top:12px">PowerPoint قابل للتعديل</button></div>
       </article>`;
     // لا يوجد addEventListener هنا — الربط يتم عبر event delegation في bind()
   }
@@ -787,7 +618,7 @@
     const env=d.environment||{};
     const integration=d.integrationTest;
     el.innerHTML = `${card("درجة الجاهزية", `${d.score}%`, "")}${card("الحكم", esc(d.grade||"--"), "")}${card("الفحوصات الناجحة", `${passed.length} / ${checks.length}`, "")}${card("الملاحظات المفتوحة", failed.length, "")}
-    <article class="deep-card full"><h3>إجراءات سريعة قبل النشر</h3><div class="action-buttons"><a class="btn-link" href="/api/backup" target="_blank">تنزيل نسخة احتياطية</a><a class="btn-link" href="/api/export/actions.csv" target="_blank">تصدير المهام CSV</a><a class="btn-link" href="/api/export/approvals.csv" target="_blank">تصدير الاعتمادات CSV</a><a class="btn-link" href="/api/export/audit.csv" target="_blank">تصدير سجل التدقيق CSV</a><button class="btn-link" type="button" data-integration-test="1">اختبار التكاملات</button></div></article>
+    <article class="deep-card full"><h3>إجراءات سريعة قبل النشر</h3><div class="action-buttons"><a class="btn-link" href="/api/backup" target="_blank">تنزيل نسخة احتياطية JSON</a><button class="customize btn-make-report" data-format="pdf" type="button">توليد تقرير PDF</button><button class="btn-link btn-make-report" data-format="pptx" type="button">توليد PowerPoint</button><button class="btn-link" type="button" data-integration-test="1">اختبار التكاملات</button></div><p class="muted">مخرجات التقارير للمستخدم النهائي محصورة في PDF أو PowerPoint. النسخ الاحتياطية والتصدير الخام مخصصة للأدمن تقنيًا فقط ولا تظهر في مركز التقارير.</p></article>
     <article class="deep-card full"><h3>فحص جاهزية النشر</h3><table class="data-table"><thead><tr><th>الفحص</th><th>الحالة</th><th>الوزن</th><th>التوصية</th></tr></thead><tbody>${checks.map(c=>`<tr><td>${esc(c.name)}</td><td><b class="pill ${c.ok?'low':'high'}">${c.ok?'ناجح':'مطلوب'}</b></td><td>${c.weight}</td><td>${esc(c.recommendation)}</td></tr>`).join("")}</tbody></table></article>
     <article class="deep-card"><h3>إعدادات البيئة</h3><div class="sys-row"><span>Google Sheet</span><b>${env.sheetConfigured?'مضبوط':'غير مضبوط'}</b></div><div class="sys-row"><span>CSV مباشر</span><b>${env.csvUrlConfigured?'مضبوط':'غير مضبوط'}</b></div><div class="sys-row"><span>مستخدمي المسارات</span><b>${env.roleUsersConfigured||0}</b></div><div class="sys-row"><span>تسجيل الدخول</span><b>${env.loginRequired?'مفعل':'معطل'}</b></div></article>
     <article class="deep-card"><h3>قنوات التكامل</h3><div class="sys-row"><span>البريد</span><b>${env.emailWebhookConfigured?'جاهز':'غير مضبوط'}</b></div><div class="sys-row"><span>واتساب</span><b>${env.whatsappWebhookConfigured?'جاهز':'غير مضبوط'}</b></div><div class="sys-row"><span>Webhook عام</span><b>${env.notificationWebhookConfigured?'جاهز':'غير مضبوط'}</b></div>${integration?`<div class="sys-row"><span>آخر اختبار</span><b>${esc(dateText(integration.generatedAt))}</b></div>`:""}</article>`;

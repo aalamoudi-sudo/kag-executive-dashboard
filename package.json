@@ -1,8 +1,8 @@
 {
   "name": "kag-operational-project-management-platform-confirmed",
-  "version": "1000.5.0",
+  "version": "1000.8.0",
   "private": true,
-  "description": "KAG Operational Project Management Platform — full cycle with deployment readiness, go-live control, backup/export, integration checks, and technical handover controls",
+  "description": "KAG Operational Project Management Platform — official PDF and PowerPoint report output with no end-user Excel exports",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",

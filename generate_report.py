@@ -387,12 +387,30 @@ def generate_dynamic_report(report_type, state):
     prs.slide_height = Inches(7.5)
 
     tracks = state.get("tracks", []) or []
-    items  = state.get("items",  []) or []
+    items  = list(state.get("items",  []) or [])
+    management = state.get("management", {}) or {}
+    notifications = state.get("notifications", []) or []
+    data_quality = state.get("dataQuality", {}) or {}
+    op_summary = state.get("operationalSummary", {}) or {}
+
+    # دمج بيانات مراكز التشغيل داخل التقرير النهائي حتى تظهر كل بيانات النظام
+    for a in management.get("actions", []) or []:
+        items.append({"type":"tasks", "title":a.get("title"), "track":a.get("track"), "owner":a.get("owner"), "priority":a.get("priority"), "due":a.get("due"), "status":a.get("status"), "evidenceUrl":a.get("evidenceUrl")})
+    for ap in management.get("approvals", []) or []:
+        items.append({"type":"approval", "title":ap.get("title"), "track":ap.get("track"), "owner":ap.get("owner"), "due":ap.get("due"), "status":ap.get("status"), "impact":ap.get("impact")})
+    for ev in management.get("fieldEvidence", []) or []:
+        items.append({"type":"evidence", "title":ev.get("title"), "track":ev.get("track"), "owner":ev.get("zone"), "due":ev.get("date"), "status":ev.get("status")})
+
     risks  = [i for i in items if i.get("type") in ("risks","مخاطرة","مخاطر") and i.get("status") != "مغلقة"]
     tasks  = [i for i in items if i.get("type") == "tasks"]
     done   = [i for i in tasks  if is_done(i)]
     active = [i for i in tasks  if is_active(i)]
     overdue= [i for i in tasks  if i.get("due","") and i.get("due","") < today_str() and not is_done(i)]
+    approvals_live = management.get("approvals", []) or []
+    actions_live = management.get("actions", []) or []
+    evidence_live = management.get("fieldEvidence", []) or []
+    meetings_live = management.get("meetings", []) or []
+    zones_live = management.get("zones", []) or []
     overall= round(sum(t.get("progress",0) for t in tracks)/len(tracks)) if tracks else 0
 
     # ألوان الهوية
@@ -556,7 +574,9 @@ def generate_dynamic_report(report_type, state):
             ("مهام نشطة",       len(active),     C_YEL),
             ("مهام متأخرة",     len(overdue),    C_RED),
             ("مخاطر مفتوحة",   len(risks),      C_RED),
+            ("جودة البيانات",   f"{data_quality.get('score','—')}٪", C_GREEN if data_quality.get('score',0)>=85 else C_YEL),
         ], top=1.75)
+        tb(s, 0.8, 2.65, 11.7, 0.35, f"التوصية التشغيلية: {op_summary.get('recommendation','لا توجد توصية تشغيلية مسجلة')}", size=11, color=C_WHITE)
         section_title(s, "أداء المسارات", top=3.0)
         t_rows = [[t.get("id",""), t.get("name",""), f"{t.get('progress',0)}٪",
                    t.get("status","—"), str(t.get("risk",0))] for t in tracks]
@@ -605,7 +625,7 @@ def generate_dynamic_report(report_type, state):
     # ==========================================
     elif report_type == "approvals":
         title = "تقرير الاعتمادات والتصعيد"
-        approval_items = [i for i in items if i.get("type") in ("approval","اعتماد","موافقة") or "اعتماد" in i.get("title","")]
+        approval_items = approvals_live or [i for i in items if i.get("type") in ("approval","اعتماد","موافقة") or "اعتماد" in i.get("title","")]
         pending_tasks  = [i for i in tasks if not is_done(i)]
         escalated      = [i for i in items if i.get("status","") in ("معرض للخطر","معرضة للخطر","متأخرة","متأخر")]
 
@@ -624,8 +644,9 @@ def generate_dynamic_report(report_type, state):
             ("حالات التصعيد",      len(escalated), C_RED),
         ], top=1.1)
         section_title(s, "المهام بانتظار اعتماد", top=2.3)
+        pend_source = approval_items if approval_items else pending_tasks
         pend_rows = [[i.get("title","")[:50], i.get("owner","—"), i.get("track","—"),
-                      fmt_date(i.get("due","")), i.get("status","—")] for i in pending_tasks[:10]]
+                      fmt_date(i.get("due","")), i.get("status","—")] for i in pend_source[:10]]
         if not pend_rows: pend_rows=[["لا توجد مهام معلقة","—","—","—","—"]]
         data_table(s, ["المهمة","المسؤول","المسار","الموعد","الحالة"], pend_rows, top=2.85)
 
@@ -650,7 +671,7 @@ def generate_dynamic_report(report_type, state):
     # ==========================================
     elif report_type == "evidence":
         title = "تقرير الأدلة الميدانية"
-        ev_items = [i for i in items if i.get("type") in ("evidence","دليل","أدلة")
+        ev_items = evidence_live or [i for i in items if i.get("type") in ("evidence","دليل","أدلة")
                     or any(k in i.get("title","") for k in ["دليل","صورة","تحقق","إغلاق","فحص"])]
 
         # شريحة 1 — غلاف
