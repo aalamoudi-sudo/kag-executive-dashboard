@@ -1,5 +1,5 @@
 /**
- * KAG Live Command Center — Google Sheets Backend (V60)
+ * KAG Operational Analytics Platform — Google Sheets Backend (V60)
  * ======================================================
  * مصدر البيانات الآن هو Google Sheet:
  *   - الفريق يعبّي البيانات داخل الجدول.
@@ -85,13 +85,11 @@ function sameOrigin(req){
   if(!origin && !referer) return true;
   try{
     const src=new URL(origin || referer);
-    // قبل نفس الـ host أو أي subdomain على onrender.com
+    // اقبل نفس الـ host فقط، مع localhost للتطوير المحلي.
     if(src.host===host) return true;
-    if(src.hostname.endsWith(".onrender.com")) return true;
-    // قبل localhost للتطوير
-    if(src.hostname==="localhost" || src.hostname==="127.0.0.1") return true;
+    if((src.hostname==="localhost" || src.hostname==="127.0.0.1") && (host||"").startsWith(src.hostname)) return true;
     return false;
-  }catch(e){ return true; } // عند الشك نقبل — الحماية الأساسية بالجلسة
+  }catch(e){ return false; }
 }
 function loginBlocked(ip){
   const a=loginAttempts.get(ip);
@@ -144,6 +142,16 @@ function writeJsonFile(file, data){
 }
 let overrides = readJsonFile(OVERRIDES_FILE, []);   // عناصر يضيفها الأدمن من اللوحة
 let auditLog  = readJsonFile(AUDIT_FILE, []);       // سجل "مَن غيّر ماذا ومتى"
+const MANAGEMENT_FILE = path.join(DATA_DIR, "management-center.json");
+let managementCenter = readJsonFile(MANAGEMENT_FILE, {
+  notifications:[], actions:[], approvals:[], changes:[], evidence:[], meetings:[], zones:[], gallery:[], escalations:[]
+});
+function saveManagementCenter(){ writeJsonFile(MANAGEMENT_FILE, managementCenter); }
+function ensureManagementBuckets(){
+  ["notifications","actions","approvals","changes","evidence","meetings","zones","gallery","escalations"].forEach(k=>{
+    if(!Array.isArray(managementCenter[k])) managementCenter[k]=[];
+  });
+}
 function saveOverrides(){ writeJsonFile(OVERRIDES_FILE, overrides); }
 function audit(actor, action, detail){
   const entry = { at:new Date().toISOString(), actor:actor||"—", action, detail:detail||"" };
@@ -224,6 +232,22 @@ function normalizeTrack(v){
   const map={A:"أ",B:"ب",C:"ج",D:"د",E:"هـ","ه":"هـ","هـ":"هـ","ا":"أ","أ":"أ","ب":"ب","ج":"ج","د":"د"};
   return map[(v.toUpperCase?v.toUpperCase():v)]||map[v]||v;
 }
+function cleanManagementPayload(body){
+  return {
+    id: crypto.randomBytes(8).toString("hex"),
+    recipients: clean(body.recipients || body.to || "جميع مديري المسارات", 160),
+    priority: clean(body.priority || "متوسطة", 40),
+    type: clean(body.type || "متابعة", 60),
+    due: clean(body.due || "", 40),
+    updateDue: clean(body.updateDue || "", 40),
+    message: clean(body.message || body.title || "", 600),
+    title: clean(body.title || body.message || "", 220),
+    owner: clean(body.owner || body.recipients || "", 160),
+    status: clean(body.status || "مرسل", 60),
+    createdAt: new Date().toISOString()
+  };
+}
+
 function normalizeType(v){
   v=(v||"").trim().toLowerCase();
   if(["task","tasks","مهمة","مهام"].includes(v))return"tasks";
@@ -577,7 +601,7 @@ const server=http.createServer(async (req,res)=>{
     // حالة مصدر البيانات (تفاصيل حساسة) — للأدمن فقط
     if(url==="/api/config"){
       if(req.method!=="GET") return sendJson(res,405,{error:"الطريقة غير مسموحة"});
-      if(!isAuthed(req)) return sendJson(res,401,{error:"يلزم تسجيل الدخول"});
+      if(!isAdmin(req)) return sendJson(res,403,{error:"تتطلب صلاحية أدمن"});
       return sendJson(res,200,{
         sheetConfigured:!!SHEET_ID,
         sheetName:SHEET_NAME||"(أول تبويب)",
@@ -591,7 +615,7 @@ const server=http.createServer(async (req,res)=>{
     if(url==="/api/refresh"){
       if(req.method!=="POST") return sendJson(res,405,{error:"الطريقة غير مسموحة"});
       if(!sameOrigin(req)) return sendJson(res,403,{error:"مصدر غير موثوق"});
-      if(!isAuthed(req)) return sendJson(res,401,{error:"يلزم تسجيل الدخول"});
+      if(!isAdmin(req)) return sendJson(res,403,{error:"تتطلب صلاحية أدمن"});
       const nowMs=Date.now();
       if(nowMs-lastForcedRefresh<3000) return sendJson(res,429,{ok:false,error:"الرجاء الانتظار قليلًا"});
       lastForcedRefresh=nowMs;
@@ -689,6 +713,60 @@ const server=http.createServer(async (req,res)=>{
       if(overrides.length!==before){ saveOverrides(); audit(ADMIN_USERNAME,"حذف عنصر",removed?`[${removed.track}] ${removed.title}`:id); rebuildLiveState(); }
       return sendJson(res,200,{ok:true,version:liveVersion});
     }
+
+    // ===== مركز الإشعارات ومراكز التشغيل المتقدمة =====
+    if(req.method==="GET" && url==="/api/management-center"){
+      if(REQUIRE_LOGIN && !isAuthed(req)) return sendJson(res,401,{error:"يلزم تسجيل الدخول"});
+      ensureManagementBuckets();
+      return sendJson(res,200,{ok:true,data:managementCenter});
+    }
+    if(req.method==="POST" && url==="/api/management-center"){
+      if(!sameOrigin(req)) return sendJson(res,403,{error:"مصدر غير موثوق"});
+      if(!isAdmin(req)) return sendJson(res,403,{error:"تتطلب صلاحية أدمن"});
+      let body={}; const raw=await readBody(req);
+      try{ body=raw?JSON.parse(raw):{}; }catch(e){ return sendJson(res,400,{error:"طلب غير صالح"}); }
+      const bucket=String(body.bucket||"actions");
+      ensureManagementBuckets();
+      if(!Object.prototype.hasOwnProperty.call(managementCenter,bucket)) return sendJson(res,400,{error:"نوع المركز غير صالح"});
+      const item=cleanManagementPayload(body);
+      managementCenter[bucket].unshift(item);
+      if(managementCenter[bucket].length>300) managementCenter[bucket]=managementCenter[bucket].slice(0,300);
+      saveManagementCenter(); audit(ADMIN_USERNAME,"إضافة في مركز التشغيل",`${bucket}: ${item.title||item.message}`);
+      return sendJson(res,200,{ok:true,item,data:managementCenter});
+    }
+    if(req.method==="GET" && url==="/api/notifications"){
+      if(REQUIRE_LOGIN && !isAuthed(req)) return sendJson(res,401,{error:"يلزم تسجيل الدخول"});
+      ensureManagementBuckets();
+      return sendJson(res,200,{ok:true,notifications:managementCenter.notifications});
+    }
+    if(req.method==="POST" && url==="/api/notifications"){
+      if(!sameOrigin(req)) return sendJson(res,403,{error:"مصدر غير موثوق"});
+      if(!isAdmin(req)) return sendJson(res,403,{error:"تتطلب صلاحية أدمن"});
+      let body={}; const raw=await readBody(req);
+      try{ body=raw?JSON.parse(raw):{}; }catch(e){ return sendJson(res,400,{error:"طلب غير صالح"}); }
+      const notification=cleanManagementPayload(body);
+      ensureManagementBuckets();
+      managementCenter.notifications.unshift(notification);
+      if(managementCenter.notifications.length>500) managementCenter.notifications=managementCenter.notifications.slice(0,500);
+      saveManagementCenter(); audit(ADMIN_USERNAME,"إرسال إشعار",`${notification.recipients}: ${notification.message}`);
+      return sendJson(res,200,{ok:true,notification,notifications:managementCenter.notifications});
+    }
+    if(req.method==="GET" && url==="/api/system-health"){
+      if(REQUIRE_LOGIN && !isAuthed(req)) return sendJson(res,401,{error:"يلزم تسجيل الدخول"});
+      ensureManagementBuckets();
+      return sendJson(res,200,{ok:true,health:{
+        server:true,
+        sync:lastSync,
+        version:liveVersion,
+        updatedAt:liveUpdatedAt,
+        rows:lastSync.rows||0,
+        notifications:managementCenter.notifications.length,
+        audit:auditLog.length,
+        reportEngine:fs.existsSync(path.join(__dirname,"generate_report.py")),
+        dataDir:DATA_DIR
+      }});
+    }
+
     // ===== سجل التدقيق (مَن غيّر ماذا ومتى) — للأدمن فقط =====
     if(req.method==="GET" && url==="/api/audit"){
       if(!isAdmin(req)) return sendJson(res,403,{error:"تتطلب صلاحية أدمن"});
@@ -697,7 +775,7 @@ const server=http.createServer(async (req,res)=>{
 
     // ===== توليد التقارير (Python) =====
     if(url.startsWith("/api/report") && req.method==="POST"){
-      if(!isAuthed(req)) return sendJson(res,401,{error:"غير مصرّح"});
+      if(!isAdmin(req)) return sendJson(res,403,{error:"تتطلب صلاحية أدمن"});
       let body={};
       const raw=await readBody(req);
       try{ body=raw?JSON.parse(raw):{}; }catch(e){ return sendJson(res,400,{error:"طلب غير صالح"}); }
@@ -756,7 +834,7 @@ server.keepAliveTimeout = 8000;
   await refreshFromSheet();
   setInterval(refreshFromSheet, SHEET_REFRESH_MS);
   server.listen(PORT,()=>{
-    console.log(`KAG Live Command Center يعمل على http://localhost:${PORT}`);
+    console.log(`KAG Operational Analytics Platform يعمل على http://localhost:${PORT}`);
     console.log(`مصدر البيانات: ${SHEET_ID?("Google Sheet ["+SHEET_ID+"]"):"بيانات تجريبية (لم يُضبط SHEET_ID)"}`);
     console.log(`اسم مستخدم الأدمن: ${ADMIN_USERNAME}  |  اسم مستخدم المشاهد: ${VIEWER_USERNAME}`);
     console.log(`العناصر المُدخلة يدويًا: ${overrides.length}  |  سجل التدقيق: ${auditLog.length} مدخل`);
