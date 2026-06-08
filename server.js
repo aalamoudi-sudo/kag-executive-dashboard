@@ -1254,7 +1254,7 @@ const server=http.createServer(async (req,res)=>{
           proc.stderr.on("data",d=>{}); // تجاهل stderr
           proc.on("error",reject);
         });
-        const safeNames = {"comprehensive":"Comprehensive","أ":"A","ب":"B","ج":"C","د":"D"};
+        const safeNames = {"comprehensive":"Comprehensive","أ":"A","ب":"B","ج":"C","د":"D","daily_ops":"DailyOps","executive":"Executive","approvals":"Approvals","evidence":"Evidence"};
         const safeName  = safeNames[reportType] || "Report";
         const dateStr   = new Date().toISOString().slice(0,10);
         const fname     = `KAGA-Report-${safeName}-${dateStr}.pptx`;
