@@ -1,32 +1,23 @@
 services:
   - type: web
-    name: kaga-command-center
+    name: kag-operational-analytics
     runtime: node
-    plan: starter
-    buildCommand: npm install && pip install python-pptx
+    plan: free
+    buildCommand: npm install && pip install -r requirements.txt
     startCommand: node server.js
     healthCheckPath: /api/health
-    # قرص دائم لتخزين الإدخالات اليدوية وسجل التدقيق (يبقى بعد إعادة النشر).
-    # متاح على الخطة المدفوعة (starter فأعلى).
-    disk:
-      name: kaga-data
-      mountPath: /var/data
-      sizeGB: 1
     envVars:
       - key: REQUIRE_LOGIN
         value: "true"
       - key: ADMIN_USERNAME
         value: MAYADEEN
+      - key: ADMIN_PASSWORD
+        sync: false
       - key: VIEWER_USERNAME
         value: KAG_VIEWER
-      - key: DATA_DIR
-        value: /var/data
-      # الأسرار التالية تُضبط يدويًا في Render -> Environment (لا تُكتب في الكود):
-      - key: ADMIN_PASSWORD
-        sync: false          # اضبط كلمة مرور أدمن قوية في لوحة Render
       - key: VIEWER_PASSWORD
-        sync: false          # اضبط كلمة مرور المشاهد في لوحة Render
+        sync: false
       - key: SHEET_ID
-        sync: false          # معرّف Google Sheet لمصدر البيانات
-      - key: SESSION_SECRET
-        generateValue: true  # يولّده Render تلقائيًا ويبقى ثابتًا (جلسات مستمرة)
+        sync: false
+      - key: SHEET_CSV_URL
+        sync: false

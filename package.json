@@ -1,11 +1,15 @@
 {
-  "name": "kag-live-command-center-gsheet",
-  "version": "70.0.0",
+  "name": "kag-operational-project-management-platform-confirmed",
+  "version": "1000.5.0",
   "private": true,
-  "description": "KAG Operational Analytics Platform — data sourced live from Google Sheets",
+  "description": "KAG Operational Project Management Platform — full cycle with deployment readiness, go-live control, backup/export, integration checks, and technical handover controls",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "check": "node --check server.js && node --check public/script.js && node scripts/verify-package.js",
+    "health": "node -e \"require('fs').accessSync('server.js'); console.log('ok')\"",
+    "smoke": "node scripts/smoke-test.js",
+    "verify": "node scripts/verify-package.js"
   },
   "engines": {
     "node": ">=18"

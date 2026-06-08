@@ -1,0 +1,22 @@
+{
+  "ui_version": "KAG_OPERATIONAL_PLATFORM_FULL_CYCLE_1000_3_CONFIRMED",
+  "home_file": "public/index.html",
+  "description_ar": "نسخة محدثة بألوان تنفيذية هادئة وفاخرة، مع تقليل النيون وتوحيد ألوان الحالة والمراكز.",
+  "mobileResponsive": "enabled",
+  "version": "1000.6.0",
+  "features": [
+    "مركز الإطلاق التشغيلي",
+    "بوابات القبول",
+    "خطة تشغيل أول أسبوع",
+    "فحص جاهزية النشر",
+    "نسخ وتصدير",
+    "PWA",
+    "مركز الإشعارات والمهام",
+    "هوية ألوان تنفيذية",
+    "تقليل تأثير النيون",
+    "توحيد ألوان الحالة",
+    "تباين أفضل للعرض الإداري"
+  ],
+  "name": "KAG Operational Platform — Executive Color Refresh",
+  "phase": "EXECUTIVE_COLOR_REFRESH_FINAL"
+}

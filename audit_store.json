@@ -1,0 +1,27 @@
+{
+  "updatedAt": "2026-06-08T16:13:41.232Z",
+  "events": [
+    {
+      "id": "d0fcbd81-0284-44d4-b6f5-7acdd3c02d0f",
+      "at": "2026-06-08T16:13:41.201Z",
+      "role": "admin",
+      "action": "تنزيل نسخة احتياطية",
+      "entity": "backup",
+      "ip": "::ffff:127.0.0.1",
+      "details": {
+        "version": "1000.4.0"
+      }
+    },
+    {
+      "id": "b285a14a-dd45-4856-b2eb-e2a593e58496",
+      "at": "2026-06-08T16:13:41.232Z",
+      "role": "admin",
+      "action": "تصدير المهام",
+      "entity": "export",
+      "ip": "::ffff:127.0.0.1",
+      "details": {
+        "rows": 8
+      }
+    }
+  ]
+}

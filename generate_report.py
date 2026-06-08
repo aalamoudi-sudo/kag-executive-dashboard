@@ -1,370 +1,356 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
-generate_report.py v4 — مولّد تقارير PPTX (قائم بذاته)
-======================================================
-يبني العرض التقديمي بالكامل برمجيًا باستخدام python-pptx،
-بدون الاعتماد على أي ملفات قوالب خارجية (هذا يمنع أعطال
-"القالب غير موجود" نهائيًا ويجعل المحرك يعمل في أي بيئة).
-
-الاستخدام:
-    echo '{"type":"comprehensive","state":{...}}' | python3 generate_report.py > out.pptx
-
-الأنواع المدعومة: comprehensive | أ | ب | ج | د
+generate_report.py v3 — مولّد تقارير PPTX
+يستخدم القوالب الأصلية ويعبّئ البيانات في أماكنها الصحيحة بالضبط
 """
-import sys, json, io
+import sys, json, io, os
 from datetime import datetime
 from pptx import Presentation
-from pptx.util import Inches, Pt, Emu
-from pptx.dml.color import RGBColor
-from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
-from pptx.enum.shapes import MSO_SHAPE
-from pptx.oxml.ns import qn
 
-# ============================================================
-# هوية بصرية — Royal Emerald & Gold / Navy
-# ============================================================
-NAVY      = RGBColor(0x0D, 0x1B, 0x2A)   # خلفية داكنة
-NAVY2     = RGBColor(0x13, 0x29, 0x3D)   # بطاقات داكنة
-GOLD      = RGBColor(0xC9, 0xA8, 0x4C)   # ذهبي
-GOLD_SOFT = RGBColor(0xD9, 0xB8, 0x6C)
-WHITE     = RGBColor(0xEA, 0xF0, 0xF7)
-MUTED     = RGBColor(0x9F, 0xB0, 0xC3)
-GREEN     = RGBColor(0x4C, 0xC9, 0x8A)
-AMBER     = RGBColor(0xE8, 0xB5, 0x4C)
-RED       = RGBColor(0xE8, 0x6C, 0x6C)
-CARD_LINE = RGBColor(0x2A, 0x3D, 0x52)
+TEMPLATES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
 
-SW, SH = Inches(13.333), Inches(7.5)   # 16:9
-FONT = "Tahoma"
-
-TRACK_META = {
-    "أ": ("التخطيط والتنسيق", "Planning & Coordination"),
-    "ب": ("التواصل والتسويق", "Communication & Marketing"),
-    "ج": ("الفعاليات والأنشطة المصاحبة", "Events & Supporting Activities"),
-    "د": ("تجهيز وتفعيل الحديقة", "Garden Setup & Activation"),
+ORIGINALS = {
+    "comprehensive": "comprehensive.pptx",
+    "أ": "track-a.pptx",
+    "ب": "track-b.pptx",
+    "ج": "track-c.pptx",
+    "د": "track-d.pptx",
 }
 
 # ============================================================
-# مساعدات بيانات
+# مساعدات
 # ============================================================
-def today_str(): return datetime.now().strftime("%Y/%m/%d")
-def week_num():  return datetime.now().isocalendar()[1]
+def today_str():
+    return datetime.now().strftime("%Y-%m-%d")
+
+def week_num():
+    return datetime.now().isocalendar()[1]
 
 def fmt_date(d):
     if not d: return "—"
     try: return datetime.strptime(str(d)[:10], "%Y-%m-%d").strftime("%Y/%m/%d")
-    except: return str(d)[:10] or "—"
+    except: return str(d)[:10]
 
-DONE_SET   = ["مكتملة","مكتمل","معتمدة","معتمد","ضمن المسار","Completed","Cleared"]
-ACTIVE_SET = ["قيد التنفيذ","تحت المتابعة","In Progress","Watch"]
-RISK_SET   = ["معرضة للخطر","معرض للخطر","متأخرة","At Risk"]
-
-def is_done(i):   return i.get("status","") in DONE_SET
-def is_active(i): return i.get("status","") in ACTIVE_SET
-def is_risk_item(i): return i.get("type","") in ["risks","مخاطرة","مخاطر"]
-
-def status_color(s):
-    if s in DONE_SET:   return GREEN
-    if s in ACTIVE_SET: return AMBER
-    if s in RISK_SET:   return RED
-    return MUTED
-
-def days_to_open(state):
-    od = state.get("project",{}).get("openingDate","2026-09-27")
-    try:
-        d = datetime.strptime(od[:10], "%Y-%m-%d")
-        return max(0, (d - datetime.now()).days)
-    except: return "—"
-
-# ============================================================
-# مساعدات رسم
-# ============================================================
-def _rtl(paragraph):
-    pPr = paragraph._pPr
-    if pPr is None:
-        pPr = paragraph._p.get_or_add_pPr()
-    pPr.set("rtl", "1")
-
-def bg(slide, color):
-    f = slide.background.fill
-    f.solid(); f.fore_color.rgb = color
-
-def textbox(slide, x, y, w, h, lines, *, size=14, color=WHITE, bold=False,
-            align=PP_ALIGN.RIGHT, anchor=MSO_ANCHOR.TOP, rtl=True, space=2, font=FONT):
-    """lines = نص واحد أو قائمة (نص) أو قائمة tuples (نص, dict خصائص)."""
-    tb = slide.shapes.add_textbox(x, y, w, h)
-    tf = tb.text_frame; tf.word_wrap = True
-    tf.vertical_anchor = anchor
-    tf.margin_left = tf.margin_right = Pt(2)
-    tf.margin_top = tf.margin_bottom = Pt(1)
-    if isinstance(lines, (str, int, float)):
-        lines = [str(lines)]
-    first = True
-    for ln in lines:
-        props = {}
-        if isinstance(ln, tuple):
-            ln, props = ln[0], ln[1]
-        p = tf.paragraphs[0] if first else tf.add_paragraph()
-        first = False
-        p.alignment = props.get("align", align)
-        p.space_after = Pt(props.get("space", space))
-        if rtl: _rtl(p)
-        run = p.add_run(); run.text = str(ln)
-        fn = run.font
-        fn.name = props.get("font", font)
-        fn.size = Pt(props.get("size", size))
-        fn.bold = props.get("bold", bold)
-        fn.color.rgb = props.get("color", color)
-    return tb
-
-def card(slide, x, y, w, h, fill=NAVY2, line=CARD_LINE, line_w=1.0, radius=True):
-    shp_type = MSO_SHAPE.ROUNDED_RECTANGLE if radius else MSO_SHAPE.RECTANGLE
-    s = slide.shapes.add_shape(shp_type, x, y, w, h)
-    s.fill.solid(); s.fill.fore_color.rgb = fill
-    s.line.color.rgb = line; s.line.width = Pt(line_w)
-    s.shadow.inherit = False
+def status_ar(s):
+    if not s: return "—"
+    if s in ["مكتملة","مكتمل","معتمدة","معتمد","ضمن المسار"]: return "أخضر ✓"
+    if s in ["قيد التنفيذ","تحت المتابعة"]: return "أصفر"
+    if s in ["معرضة للخطر","معرض للخطر","متأخرة"]: return "أحمر ✗"
     return s
 
-def accent_bar(slide, x, y, w, h, color=GOLD):
-    s = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, x, y, w, h)
-    s.fill.solid(); s.fill.fore_color.rgb = color
-    s.line.fill.background(); s.shadow.inherit = False
-    return s
+def is_done(i): return i.get("status","") in ["مكتملة","مكتمل","معتمدة","معتمد"]
+def is_active(i): return i.get("status","") == "قيد التنفيذ"
+def is_risk(i): return i.get("type","") in ["مخاطرة","مخاطر","risks"]
 
-def new_slide(prs):
-    s = prs.slides.add_slide(prs.slide_layouts[6])  # blank
-    return s
+def get(lst, idx, key="title", default="—"):
+    return lst[idx].get(key, default) if idx < len(lst) else default
 
-# ============================================================
-# شرائح مشتركة
-# ============================================================
-def slide_cover(prs, title, subtitle, state):
-    s = new_slide(prs); bg(s, NAVY)
-    accent_bar(s, Inches(0), Inches(0), SW, Inches(0.12), GOLD)
-    textbox(s, Inches(0.8), Inches(1.7), Inches(11.7), Inches(0.6),
-            "حدائق الملك عبدالله", size=22, color=GOLD, bold=True)
-    textbox(s, Inches(0.8), Inches(2.35), Inches(11.7), Inches(1.4),
-            title, size=40, color=WHITE, bold=True)
-    textbox(s, Inches(0.8), Inches(3.9), Inches(11.7), Inches(0.6),
-            subtitle, size=18, color=MUTED)
-    # شريط معلومات سفلي
-    info = f"الأسبوع {week_num()} · {today_str()}   |   متبقٍّ على الافتتاح: {days_to_open(state)} يوم"
-    textbox(s, Inches(0.8), Inches(6.4), Inches(11.7), Inches(0.6),
-            info, size=15, color=GOLD_SOFT, bold=True)
-    return s
+def bullet_lines(lst, key="title"):
+    if not lst: return "لا يوجد"
+    return "\n".join(f"• {i.get(key,'')}" for i in lst)
 
-def kpi_callout(slide, x, y, w, value, label, color=GOLD):
-    card(slide, x, y, w, Inches(1.25), NAVY2)
-    textbox(slide, x, y+Inches(0.14), w, Inches(0.7), str(value),
-            size=34, color=color, bold=True, align=PP_ALIGN.CENTER)
-    textbox(slide, x, y+Inches(0.86), w, Inches(0.32), label,
-            size=12, color=MUTED, align=PP_ALIGN.CENTER)
-
-def data_table(slide, x, y, w, headers, rows, *, row_h=Inches(0.42),
-               col_ratios=None, max_rows=8, empty_text="لا توجد عناصر"):
-    n = len(headers)
-    col_ratios = col_ratios or [1.0/n]*n
-    widths = [Emu(int(w * r)) for r in col_ratios]
-    # رأس الجدول
-    hx = x
-    hbar = accent_bar(slide, x, y, w, row_h, NAVY2)
-    hbar.line.color.rgb = GOLD; hbar.line.width = Pt(0.75)
-    cx = x + w
-    for i, head in enumerate(headers):
-        cx -= widths[i]
-        textbox(slide, cx, y+Inches(0.05), widths[i], Inches(0.32), head,
-                size=12, color=GOLD, bold=True, align=PP_ALIGN.CENTER)
-    # الصفوف
-    yy = y + row_h
-    shown = rows[:max_rows]
-    if not shown:
-        textbox(slide, x, yy+Inches(0.12), w, Inches(0.4), empty_text,
-                size=13, color=MUTED, align=PP_ALIGN.CENTER)
-        return
-    for r in shown:
-        card(slide, x, yy, w, row_h, NAVY, CARD_LINE, 0.75, radius=False)
-        cx = x + w
-        for i, cell in enumerate(r):
-            cx -= widths[i]
-            txt = cell[0] if isinstance(cell, tuple) else cell
-            col = cell[1] if isinstance(cell, tuple) else WHITE
-            textbox(slide, cx, yy+Inches(0.06), widths[i], Inches(0.32), txt,
-                    size=11, color=col, bold=False, align=PP_ALIGN.CENTER)
-        yy += row_h
+def F(slide, name, text):
+    """ابحث عن shape باسمه وعيّن نصه مع الحفاظ على التنسيق"""
+    for shape in slide.shapes:
+        if shape.name == name and shape.has_text_frame:
+            tf = shape.text_frame
+            if not tf.paragraphs: return
+            # احذف paragraphs الزائدة
+            while len(tf.paragraphs) > 1:
+                tf.paragraphs[-1]._p.getparent().remove(tf.paragraphs[-1]._p)
+            para = tf.paragraphs[0]
+            # احذف runs الزائدة
+            while len(para.runs) > 1:
+                para.runs[-1]._r.getparent().remove(para.runs[-1]._r)
+            # عيّن النص
+            t = str(text) if text else "—"
+            if para.runs:
+                para.runs[0].text = t
+            else:
+                para.text = t
+            return
 
 # ============================================================
 # التقرير الشامل
 # ============================================================
-def build_comprehensive(prs, state):
+def fill_comprehensive(prs, state):
     tracks = state.get("tracks", [])
     items  = state.get("items", [])
-    risks  = [i for i in items if is_risk_item(i) and i.get("status")!="مغلقة"]
+    risks  = [i for i in items if is_risk(i) and i.get("status") != "مغلقة"]
     done   = [i for i in items if is_done(i)]
     active = [i for i in items if is_active(i)]
+
     overall = round(sum(t.get("progress",0) for t in tracks)/len(tracks)) if tracks else 0
-    total_tasks = sum(int(t.get("tasks",0)) for t in tracks)
-    total_done  = sum(int(t.get("done",0)) for t in tracks)
-    open_risks  = len(risks) + sum(1 for i in items if i.get("status") in RISK_SET)
+    worst = "أحمر" if any(t.get("status","") in ["معرض للخطر","معرضة للخطر"] for t in tracks) \
+        else "أصفر" if any(t.get("status","") == "تحت المتابعة" for t in tracks) else "أخضر"
 
-    # 1) الغلاف
-    slide_cover(prs, "التقرير التنفيذي الشامل", "مركز القيادة المباشر — المكتب التنفيذي للمشروع", state)
+    def gt(tid): return next((t for t in tracks if t.get("track")==tid), {})
 
-    # 2) الملخص التنفيذي + KPIs
-    s = new_slide(prs); bg(s, NAVY)
-    textbox(s, Inches(0.6), Inches(0.45), Inches(12.1), Inches(0.7),
-            "الملخص التنفيذي", size=30, color=GOLD, bold=True)
-    gap = Inches(0.28); kw = Inches(2.86); kx = SW - Inches(0.6) - kw
-    data_kpis = [(f"{overall}٪","الإنجاز العام",GOLD),
-                 (total_tasks,"إجمالي المهام",WHITE),
-                 (total_done,"المهام المنجزة",GREEN),
-                 (open_risks,"المخاطر المفتوحة",RED)]
-    for v,l,c in data_kpis:
-        kpi_callout(s, kx, Inches(1.35), kw, v, l, c); kx -= (kw+gap)
-    # عمودان: إنجازات / قيد التنفيذ
-    colw = Inches(5.95)
-    card(s, SW-Inches(0.6)-colw, Inches(2.95), colw, Inches(3.9), NAVY2)
-    textbox(s, SW-Inches(0.6)-colw, Inches(3.05), colw, Inches(0.4),
-            "أبرز الإنجازات", size=16, color=GREEN, bold=True, align=PP_ALIGN.CENTER)
-    textbox(s, SW-Inches(0.6)-colw+Inches(0.2), Inches(3.55), colw-Inches(0.4), Inches(3.2),
-            [(f"• {i.get('title','')}", {"size":13}) for i in done[:8]] or [("لا يوجد",{"color":MUTED})])
-    card(s, Inches(0.6), Inches(2.95), colw, Inches(3.9), NAVY2)
-    textbox(s, Inches(0.6), Inches(3.05), colw, Inches(0.4),
-            "قيد التنفيذ والمتابعة", size=16, color=AMBER, bold=True, align=PP_ALIGN.CENTER)
-    textbox(s, Inches(0.8), Inches(3.55), colw-Inches(0.4), Inches(3.2),
-            [(f"• {i.get('title','')}", {"size":13}) for i in active[:8]] or [("لا يوجد",{"color":MUTED})])
+    # شريحة 1 — الغلاف
+    s1 = prs.slides[0]
+    F(s1, "Text 4", f"الأسبوع {week_num()} ٢٠٢٦  |  {today_str()}")
 
-    # 3) المسارات الأربعة
-    s = new_slide(prs); bg(s, NAVY)
-    textbox(s, Inches(0.6), Inches(0.45), Inches(12.1), Inches(0.7),
-            "حالة المسارات الأربعة", size=30, color=GOLD, bold=True)
-    cw = Inches(2.95); gap = Inches(0.2); cx = SW - Inches(0.6) - cw
-    for t in tracks[:4]:
-        tid = t.get("track") or t.get("id","")
-        name = t.get("name") or TRACK_META.get(tid,("",""))[0]
-        prog = int(t.get("progress",0)); st = t.get("status","—")
-        card(s, cx, Inches(1.5), cw, Inches(4.6), NAVY2)
-        accent_bar(s, cx, Inches(1.5), cw, Inches(0.1), GOLD)
-        textbox(s, cx, Inches(1.75), cw, Inches(0.5), f"المسار {tid}", size=15, color=GOLD, bold=True, align=PP_ALIGN.CENTER)
-        textbox(s, cx+Inches(0.1), Inches(2.25), cw-Inches(0.2), Inches(0.9), name, size=13, color=WHITE, bold=True, align=PP_ALIGN.CENTER)
-        textbox(s, cx, Inches(3.25), cw, Inches(1.0), f"{prog}٪", size=44, color=GOLD, bold=True, align=PP_ALIGN.CENTER)
-        textbox(s, cx, Inches(4.35), cw, Inches(0.4), st, size=13, color=status_color(st), bold=True, align=PP_ALIGN.CENTER)
-        mini = f"المهام {t.get('tasks',0)} · منجزة {t.get('done',0)} · خطر {t.get('risk',0)}"
-        textbox(s, cx, Inches(5.5), cw, Inches(0.5), mini, size=11, color=MUTED, align=PP_ALIGN.CENTER)
-        cx -= (cw+gap)
+    # شريحة 2 — الملخص التنفيذي
+    s2 = prs.slides[1]
+    F(s2, "Text 17", f"الحالة: {worst}  |  نسبة إنجاز اليوم: {overall}٪")
+    F(s2, "Text 21", bullet_lines(done[:3]))
+    F(s2, "Text 25", bullet_lines(active[:3]))
+    # القضايا الحرجة — 3 صفوف
+    risk_rows = [
+        ("Text 44","Text 46","Text 48","Text 50","Shape 51"),
+        ("Text 54","Text 56","Text 58","Text 60","Text 62"),
+        ("Text 64","Text 66","Text 68","Text 70","Text 72"),
+    ]
+    for idx, (st, sm, sa, sar, sq) in enumerate(risk_rows):
+        r = risks[idx] if idx < len(risks) else None
+        F(s2, st,  fmt_date(r.get("due",""))  if r else "—")
+        F(s2, sm,  r.get("owner","—")         if r else "—")
+        F(s2, sa,  "متابعة عاجلة"              if r else "—")
+        F(s2, sar, "تأثير على الجدول"          if r else "—")
+        F(s2, sq,  r.get("title","—")          if r else "—")
 
-    # 4) المخاطر والقرارات
-    s = new_slide(prs); bg(s, NAVY)
-    textbox(s, Inches(0.6), Inches(0.45), Inches(12.1), Inches(0.7),
-            "سجل المخاطر والقرارات", size=30, color=GOLD, bold=True)
-    rows = []
-    for r in risks[:9]:
-        rows.append([(r.get("title","—"),WHITE),(r.get("owner","—"),MUTED),
-                     (r.get("status","—"),status_color(r.get("status",""))),(fmt_date(r.get("due","")),MUTED)])
-    data_table(s, Inches(0.6), Inches(1.35), Inches(12.13),
-               ["البند","المسؤول","الحالة","الاستحقاق"], rows,
-               col_ratios=[0.46,0.22,0.18,0.14], max_rows=9,
-               empty_text="لا توجد مخاطر مفتوحة مسجلة")
+    # شريحة 3 — المسارات الأربعة
+    s3 = prs.slides[2]
+    track_map = [
+        ("أ","Text 32","Text 30","Text 28","Text 26","Text 24"),
+        ("ب","Text 44","Text 42","Text 40","Text 38","Text 36"),
+        ("ج","Text 56","Text 54","Text 52","Text 50","Text 48"),
+        ("د","Text 68","Text 66","Text 64","Text 62","Text 60"),
+    ]
+    for tid, amsl, alyom, ghad, hal, da3m in track_map:
+        t = gt(tid)
+        ti = [i for i in items if i.get("track")==tid]
+        td = [i for i in ti if is_done(i)]
+        ta = [i for i in ti if is_active(i)]
+        tn = sorted([i for i in ti if not is_risk(i) and i.get("due","")>today_str()], key=lambda x:x.get("due",""))
+        tr = [i for i in ti if is_risk(i) and i.get("status")!="مغلقة"]
+        F(s3, amsl,  get(td,0) if td else "—")
+        F(s3, alyom, get(ta,0) if ta else "—")
+        F(s3, ghad,  get(tn,0) if tn else "—")
+        F(s3, hal,   status_ar(t.get("status","")))
+        F(s3, da3m,  f"{len(tr)} مخاطر" if tr else "لا يوجد")
 
-    # 5) الجدول الزمني
-    s = new_slide(prs); bg(s, NAVY)
-    textbox(s, Inches(0.6), Inches(0.45), Inches(12.1), Inches(0.7),
-            "الجدول الزمني والمهام القادمة", size=30, color=GOLD, bold=True)
-    tasks = [i for i in items if not is_risk_item(i)]
-    upcoming = sorted([i for i in tasks if str(i.get("due",""))>datetime.now().strftime("%Y-%m-%d")],
-                      key=lambda x:x.get("due",""))
-    cols = [("منجزة", [i for i in tasks if is_done(i)][:7], GREEN),
-            ("قيد التنفيذ", [i for i in tasks if is_active(i)][:7], AMBER),
-            ("قادمة", upcoming[:7], GOLD)]
-    colw = Inches(3.9); gap = Inches(0.2); cx = SW - Inches(0.6) - colw
-    for title,lst,c in cols:
-        card(s, cx, Inches(1.4), colw, Inches(5.4), NAVY2)
-        textbox(s, cx, Inches(1.5), colw, Inches(0.4), title, size=16, color=c, bold=True, align=PP_ALIGN.CENTER)
-        textbox(s, cx+Inches(0.15), Inches(2.05), colw-Inches(0.3), Inches(4.6),
-                [(f"• {i.get('title','')}", {"size":12}) for i in lst] or [("لا يوجد",{"color":MUTED})])
-        cx -= (colw+gap)
+    # شريحة 4 — السلامة (نتركها كما هي)
+
+    # شريحة 5 — المخاطر والقرارات
+    s5 = prs.slides[4]
+    red = [r for r in risks if r.get("status","") in ["معرضة للخطر","معرض للخطر"]]
+    yel = [r for r in risks if r.get("status","") in ["تحت المتابعة","قيد التنفيذ"]]
+    grn = [r for r in risks if r not in red and r not in yel]
+    buckets = [
+        (red, "Text 28","Text 22","Text 24","Text 26","Text 30"),
+        (yel, "Text 38","Text 32","Text 34","Text 36","Text 40"),
+        (grn, "Text 48","Text 42","Text 44","Text 46","Text 50"),
+    ]
+    for lst, sq, sm, st, stow, _ in buckets:
+        r = lst[0] if lst else None
+        F(s5, sq,   r.get("title","—")       if r else "—")
+        F(s5, sm,   r.get("owner","—")        if r else "—")
+        F(s5, st,   fmt_date(r.get("due","")) if r else "—")
+        F(s5, stow, "متابعة عاجلة"            if r else "—")
+    dec_rows = [
+        ("Text 69","Text 67","Text 65","Text 63"),
+        ("Text 77","Text 75","Text 73","Text 71"),
+        ("Text 85","Text 83","Text 81","Text 79"),
+    ]
+    for idx, (sw, sa, sar, sr) in enumerate(dec_rows):
+        r = risks[idx] if idx < len(risks) else None
+        F(s5, sw,  r.get("title","—") if r else "—")
+        F(s5, sa,  "تأثير على الجدول" if r else "—")
+        F(s5, sar, "متابعة عاجلة"     if r else "—")
+        F(s5, sr,  f"خطر-{idx+1}"     if r else "—")
+
+    # شريحة 6 — الجدول الزمني
+    s6 = prs.slides[5]
+    all_tasks = [i for i in items if not is_risk(i)]
+    td = [i for i in all_tasks if is_done(i)][:4]
+    ta = [i for i in all_tasks if is_active(i)][:4]
+    tn = sorted([i for i in all_tasks if i.get("due","")>today_str()], key=lambda x:x.get("due",""))[:4]
+    F(s6, "Text 42", bullet_lines(td))
+    F(s6, "Text 31", bullet_lines(ta))
+    F(s6, "Text 20", bullet_lines(tn))
 
 # ============================================================
-# تقرير مسار واحد
+# تقارير المسارات (أ، ب، ج، د — نفس البنية)
 # ============================================================
-def build_track(prs, tid, state):
+def fill_track(prs, track_key, state):
     tracks = state.get("tracks", [])
     items  = state.get("items", [])
-    track  = next((t for t in tracks if (t.get("track") or t.get("id"))==tid), {})
-    ti     = [i for i in items if i.get("track")==tid]
-    risks  = [i for i in ti if is_risk_item(i) and i.get("status")!="مغلقة"]
-    tasks  = [i for i in ti if not is_risk_item(i)]
-    done   = [i for i in tasks if is_done(i)]
-    active = [i for i in tasks if is_active(i)]
-    upcoming = sorted([i for i in tasks if str(i.get("due",""))>datetime.now().strftime("%Y-%m-%d")],
-                      key=lambda x:x.get("due",""))
-    name, en = TRACK_META.get(tid, (track.get("name","مسار"), track.get("ar","")))
-    prog = int(track.get("progress",0)); st = track.get("status","—")
+    track  = next((t for t in tracks if t.get("track")==track_key), {})
+    ti     = [i for i in items if i.get("track")==track_key]
+    risks  = [i for i in ti if is_risk(i) and i.get("status")!="مغلقة"]
+    done   = [i for i in ti if is_done(i)]
+    active = [i for i in ti if is_active(i)]
+    tasks  = [i for i in ti if not is_risk(i)]
+    upcoming = sorted([i for i in ti if not is_risk(i) and i.get("due","")>today_str()], key=lambda x:x.get("due",""))
+    progress = track.get("progress", 0)
 
-    # 1) الغلاف
-    slide_cover(prs, f"تقرير المسار {tid}", f"{name} · {en}", state)
+    # شريحة 1 — الغلاف: لا تعديل (اسم المسار موجود في القالب)
 
-    # 2) ملخص المسار
-    s = new_slide(prs); bg(s, NAVY)
-    textbox(s, Inches(0.6), Inches(0.45), Inches(12.1), Inches(0.7),
-            f"المسار {tid} — {name}", size=28, color=GOLD, bold=True)
-    kw = Inches(2.86); gap = Inches(0.28); kx = SW - Inches(0.6) - kw
-    for v,l,c in [(f"{prog}٪","نسبة الإنجاز",GOLD),(len(tasks),"إجمالي المهام",WHITE),
-                  (len(done),"المنجزة",GREEN),(len(risks),"المخاطر",RED)]:
-        kpi_callout(s, kx, Inches(1.4), kw, v, l, c); kx -= (kw+gap)
-    textbox(s, Inches(0.6), Inches(2.95), Inches(12.1), Inches(0.5),
-            f"الحالة العامة للمسار: {st}", size=18, color=status_color(st), bold=True)
-    colw = Inches(5.95)
-    card(s, SW-Inches(0.6)-colw, Inches(3.6), colw, Inches(3.25), NAVY2)
-    textbox(s, SW-Inches(0.6)-colw, Inches(3.7), colw, Inches(0.4), "أبرز الإنجازات", size=15, color=GREEN, bold=True, align=PP_ALIGN.CENTER)
-    textbox(s, SW-Inches(0.6)-colw+Inches(0.2), Inches(4.15), colw-Inches(0.4), Inches(2.6),
-            [(f"• {i.get('title','')}",{"size":13}) for i in done[:6]] or [("لا يوجد",{"color":MUTED})])
-    card(s, Inches(0.6), Inches(3.6), colw, Inches(3.25), NAVY2)
-    textbox(s, Inches(0.6), Inches(3.7), colw, Inches(0.4), "قيد التنفيذ", size=15, color=AMBER, bold=True, align=PP_ALIGN.CENTER)
-    textbox(s, Inches(0.8), Inches(4.15), colw-Inches(0.4), Inches(2.6),
-            [(f"• {i.get('title','')}",{"size":13}) for i in active[:6]] or [("لا يوجد",{"color":MUTED})])
+    # شريحة 2 — الملخص اليومي
+    s2 = prs.slides[1]
+    F(s2, "Text 12", f"الحالة المختارة: {status_ar(track.get('status',''))}  |  نسبة إنجاز اليوم: {progress}٪")
+    # ملخص الإنجاز — 3 عناصر
+    F(s2, "Text 15",
+      f"{get(done,0)}\n{get(done,1)}\n{get(done,2)}")
+    # الدعم المطلوب
+    F(s2, "Text 18",
+      f"{get(risks,0)}  |  آخر موعد: {fmt_date(risks[0].get('due','')) if risks else '—'}"
+      if risks else "لا يوجد دعم عاجل مطلوب")
+    # التحديث التفصيلي — 4 صفوف × 3 أعمدة
+    detail_rows = [
+        ("Text 42","Text 40","Text 38", 0),  # أنشطة رئيسية
+        ("Text 54","Text 52","Text 50", 1),  # مخرجات/اعتمادات
+        ("Text 66","Text 64","Text 62", 2),  # تنسيق مع جهات
+        ("Text 78","Text 76","Text 74", 3),  # موردين/أطراف
+    ]
+    for amsl, alyom, ghad, idx in detail_rows:
+        F(s2, amsl,  get(done,    idx) if idx < len(done)     else "—")
+        F(s2, alyom, get(active,  idx) if idx < len(active)   else "—")
+        F(s2, ghad,  get(upcoming,idx) if idx < len(upcoming) else "—")
 
-    # 3) تفاصيل المهام
-    s = new_slide(prs); bg(s, NAVY)
-    textbox(s, Inches(0.6), Inches(0.45), Inches(12.1), Inches(0.7), "تفاصيل المهام", size=28, color=GOLD, bold=True)
-    rows = [[(t.get("title","—"),WHITE),(t.get("owner","—"),MUTED),
-             (t.get("status","—"),status_color(t.get("status",""))),(fmt_date(t.get("due","")),MUTED)] for t in tasks]
-    data_table(s, Inches(0.6), Inches(1.35), Inches(12.13),
-               ["المهمة","المسؤول","الحالة","الاستحقاق"], rows,
-               col_ratios=[0.48,0.22,0.16,0.14], max_rows=11, empty_text="لا توجد مهام مسجلة")
+    # شريحة 3 — تفاصيل الأنشطة (8 صفوف)
+    s3 = prs.slides[2]
+    task_rows = [
+        ("Text 35","Text 33","Text 31","Text 29","Text 27","Text 25"),
+        ("Text 51","Text 49","Text 47","Text 45","Text 43","Text 41"),
+        ("Text 67","Text 65","Text 63","Text 61","Text 59","Text 57"),
+        ("Text 83","Text 81","Text 79","Text 77","Text 75","Text 73"),
+        ("Text 99","Text 97","Text 95","Text 93","Text 91","Text 89"),
+        ("Text 115","Text 113","Text 111","Text 109","Text 107","Text 105"),
+        ("Text 131","Text 129","Text 127","Text 125","Text 123","Text 121"),
+        ("Text 147","Text 145","Text 143","Text 141","Text 139","Text 137"),
+    ]
+    for idx, (stitle, sowner, sstart, send, sstatus, spct) in enumerate(task_rows):
+        t = tasks[idx] if idx < len(tasks) else None
+        F(s3, stitle,  t.get("title","—")             if t else "—")
+        F(s3, sowner,  t.get("owner","—")              if t else "—")
+        F(s3, sstart,  fmt_date(t.get("due",""))       if t else "—")
+        F(s3, send,    fmt_date(t.get("due",""))        if t else "—")
+        F(s3, sstatus, status_ar(t.get("status",""))   if t else "—")
+        F(s3, spct,    f"{t.get('progress',0)}٪"        if t else "—")
 
-    # 4) المخاطر
-    s = new_slide(prs); bg(s, NAVY)
-    textbox(s, Inches(0.6), Inches(0.45), Inches(12.1), Inches(0.7), "المخاطر والقرارات", size=28, color=GOLD, bold=True)
-    rows = [[(r.get("title","—"),WHITE),(r.get("owner","—"),MUTED),
-             (r.get("status","—"),status_color(r.get("status",""))),(fmt_date(r.get("due","")),MUTED)] for r in risks]
-    data_table(s, Inches(0.6), Inches(1.35), Inches(12.13),
-               ["البند","المسؤول","الحالة","الاستحقاق"], rows,
-               col_ratios=[0.48,0.22,0.16,0.14], max_rows=11, empty_text="لا توجد مخاطر مفتوحة")
+    # شريحة 4 — المخاطر والقرارات
+    s4 = prs.slides[3]
+    red = [r for r in risks if r.get("status","") in ["معرضة للخطر","معرض للخطر"]]
+    yel = [r for r in risks if r.get("status","") in ["تحت المتابعة","قيد التنفيذ"]]
+    grn = [r for r in risks if r not in red and r not in yel]
+    risk_buckets = [
+        (red, "Text 25","Text 19","Text 21","Text 23","Text 17"),
+        (yel, "Text 37","Text 29","Text 31","Text 33","Text 35"),  # fixed: أص row
+        (grn, "Text 49","Text 41","Text 43","Text 45","Text 47"),  # fixed: أ row
+    ]
+    for lst, sq, stime1, sm, stow, stime2 in risk_buckets:
+        r = lst[0] if lst else None
+        F(s4, sq,     r.get("title","—")       if r else "—")
+        F(s4, sm,     r.get("owner","—")        if r else "—")
+        F(s4, stow,   "متابعة عاجلة"            if r else "—")
+        F(s4, stime1, fmt_date(r.get("due","")) if r else "—")
+        F(s4, stime2, fmt_date(r.get("due","")) if r else "—")
+    dec_rows4 = [
+        ("Text 71","Text 69","Text 67","Text 65"),
+        ("Text 79","Text 77","Text 75","Text 73"),
+        ("Text 87","Text 85","Text 83","Text 81"),
+    ]
+    for idx, (sw, sa, sar, sr) in enumerate(dec_rows4):
+        r = risks[idx] if idx < len(risks) else None
+        F(s4, sw,  r.get("title","—") if r else "—")
+        F(s4, sa,  "تأثير على الجدول" if r else "—")
+        F(s4, sar, "متابعة"            if r else "—")
+        F(s4, sr,  f"خطر-{idx+1}"     if r else "—")
 
-    # 5) الجدول الزمني
-    s = new_slide(prs); bg(s, NAVY)
-    textbox(s, Inches(0.6), Inches(0.45), Inches(12.1), Inches(0.7), "المهام القادمة", size=28, color=GOLD, bold=True)
-    card(s, Inches(0.6), Inches(1.4), Inches(12.13), Inches(5.4), NAVY2)
-    textbox(s, Inches(0.8), Inches(1.7), Inches(11.7), Inches(4.9),
-            [(f"• {i.get('title','')}   ({fmt_date(i.get('due',''))})", {"size":14}) for i in upcoming[:14]]
-            or [("لا توجد مهام قادمة مجدولة",{"color":MUTED})])
+    # شريحة 5 — السلامة: نتركها كما هي
+
+    # شريحة 6 — الجدول الزمني
+    s6 = prs.slides[5]
+    td6 = [i for i in tasks if is_done(i)][:4]
+    ta6 = [i for i in tasks if is_active(i)][:4]
+    tn6 = upcoming[:4]
+    F(s6, "Text 33", bullet_lines(td6))
+    F(s6, "Text 24", bullet_lines(ta6))
+    F(s6, "Text 15", bullet_lines(tn6))
+
+    # شريحة 7 — التوصيات: نتركها فارغة للتعبئة اليدوية
+
 
 # ============================================================
-# نقطة الدخول
+# مولّد احتياطي بدون قوالب — يضمن أن زر التقرير لا يفشل إذا لم تُرفق templates
 # ============================================================
-def generate_report(report_type, state):
+def generate_fallback_report(report_type, state):
+    from pptx.util import Inches, Pt
     prs = Presentation()
-    prs.slide_width = SW; prs.slide_height = SH
-    if report_type == "comprehensive":
-        build_comprehensive(prs, state)
-    elif report_type in TRACK_META:
-        build_track(prs, report_type, state)
-    else:
-        raise ValueError(f"نوع تقرير غير معروف: {report_type}")
+    prs.slide_width = Inches(13.333)
+    prs.slide_height = Inches(7.5)
+    tracks = state.get("tracks", []) or []
+    items = state.get("items", []) or []
+    risks = [i for i in items if i.get("type") == "risks" and i.get("status") != "مغلقة"]
+    tasks = [i for i in items if i.get("type") == "tasks"]
+    done = [i for i in tasks if is_done(i)]
+    active = [i for i in tasks if i.get("status") in ["قيد التنفيذ", "تحت المتابعة"]]
+    overall = round(sum(t.get("progress",0) for t in tracks)/len(tracks)) if tracks else 0
+
+    def add_title_slide(title, subtitle):
+        slide = prs.slides.add_slide(prs.slide_layouts[6])
+        bg = slide.background.fill
+        bg.solid(); bg.fore_color.rgb = __import__('pptx').dml.color.RGBColor(13, 27, 42)
+        box = slide.shapes.add_textbox(Inches(0.8), Inches(1.0), Inches(11.8), Inches(1.2))
+        tf = box.text_frame; tf.text = title
+        tf.paragraphs[0].font.size = Pt(34); tf.paragraphs[0].font.bold = True
+        tf.paragraphs[0].font.color.rgb = __import__('pptx').dml.color.RGBColor(217,184,108)
+        sub = slide.shapes.add_textbox(Inches(0.8), Inches(2.15), Inches(11.8), Inches(0.8))
+        sub.text_frame.text = subtitle
+        sub.text_frame.paragraphs[0].font.size = Pt(18)
+        sub.text_frame.paragraphs[0].font.color.rgb = __import__('pptx').dml.color.RGBColor(234,240,247)
+        return slide
+
+    def add_bullets(title, lines):
+        slide = prs.slides.add_slide(prs.slide_layouts[6])
+        slide.background.fill.solid(); slide.background.fill.fore_color.rgb = __import__('pptx').dml.color.RGBColor(13,27,42)
+        h = slide.shapes.add_textbox(Inches(0.7), Inches(0.45), Inches(12), Inches(0.55))
+        h.text_frame.text = title
+        h.text_frame.paragraphs[0].font.size = Pt(26); h.text_frame.paragraphs[0].font.bold = True
+        h.text_frame.paragraphs[0].font.color.rgb = __import__('pptx').dml.color.RGBColor(217,184,108)
+        body = slide.shapes.add_textbox(Inches(0.9), Inches(1.25), Inches(11.7), Inches(5.7))
+        tf = body.text_frame; tf.word_wrap = True; tf.text = ""
+        for idx, line in enumerate(lines):
+            p = tf.paragraphs[0] if idx == 0 else tf.add_paragraph()
+            p.text = "• " + str(line)
+            p.font.size = Pt(16)
+            p.font.color.rgb = __import__('pptx').dml.color.RGBColor(234,240,247)
+        return slide
+
+    add_title_slide("تقرير منصة التحليل التشغيلي", f"نوع التقرير: {report_type} | التاريخ: {today_str()} | التقدم العام: {overall}٪")
+    add_bullets("ملخص الأداء", [
+        f"عدد المسارات: {len(tracks)}",
+        f"إجمالي المهام: {len(tasks)}",
+        f"المهام المنجزة: {len(done)}",
+        f"المهام تحت التنفيذ/المتابعة: {len(active)}",
+        f"المخاطر المفتوحة: {len(risks)}",
+    ])
+    add_bullets("حالة المسارات", [f"{t.get('id','')} - {t.get('name','')}: {t.get('progress',0)}٪ / {t.get('status','-')}" for t in tracks] or ["لا توجد مسارات"])
+    add_bullets("أهم المخاطر والإجراءات", [f"{r.get('title','-')} | المالك: {r.get('owner','-')} | الموعد: {fmt_date(r.get('due',''))}" for r in risks[:8]] or ["لا توجد مخاطر مفتوحة"])
     buf = io.BytesIO(); prs.save(buf); return buf.getvalue()
 
+# ============================================================
+# الدالة الرئيسية
+# ============================================================
+def generate_report(report_type, state):
+    tpl_file = ORIGINALS.get(report_type)
+    if not tpl_file:
+        raise ValueError(f"نوع تقرير غير معروف: {report_type}")
+    tpl_path = os.path.join(TEMPLATES_DIR, tpl_file)
+    if not os.path.exists(tpl_path):
+        return generate_fallback_report(report_type, state)
+    prs = Presentation(tpl_path)
+    if report_type == "comprehensive":
+        fill_comprehensive(prs, state)
+    else:
+        fill_track(prs, report_type, state)
+    buf = io.BytesIO()
+    prs.save(buf)
+    return buf.getvalue()
+
 if __name__ == "__main__":
-    data = json.loads(sys.stdin.read())
-    out = generate_report(data.get("type","comprehensive"), data.get("state",{}))
-    sys.stdout.buffer.write(out)
+    data  = json.loads(sys.stdin.read())
+    result = generate_report(data.get("type","comprehensive"), data.get("state",{}))
+    sys.stdout.buffer.write(result)

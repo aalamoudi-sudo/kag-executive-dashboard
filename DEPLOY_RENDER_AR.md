@@ -1,4 +1,4 @@
-# نشر "مركز القيادة المباشر" على Render — تعليمات مختصرة
+# نشر "منصة التحليل التشغيلي" على Render — تعليمات مختصرة
 
 > الهدف: رابط ثابت دائم يفتحه الفريق، مع قفل دخول كامل.
 > الوقت المتوقع: ١٠–١٥ دقيقة، مرة واحدة فقط.
@@ -17,22 +17,15 @@
    - **Build Command:** `npm install`
    - **Start Command:** `node server.js`
    - **Instance Type:** Free
-4. تحت **Environment Variables** اضبط القيم التالية (بعضها موجود تلقائيًا عبر render.yaml):
+4. تحت **Environment Variables** تأكد من وجود (موجودة تلقائيًا عبر render.yaml):
    - `REQUIRE_LOGIN` = `true`
    - `ADMIN_USERNAME` = `MAYADEEN`
-   - `VIEWER_USERNAME` = `KAG_VIEWER`
-   - `ADMIN_PASSWORD` = اكتب كلمة مرور أدمن قوية هنا (لا تُكتب في الكود)
-   - `VIEWER_PASSWORD` = اكتب كلمة مرور المشاهد هنا
-   - `SHEET_ID` = معرّف Google Sheet لمصدر البيانات
-   - `SESSION_SECRET` = يولّده Render تلقائيًا (generateValue) — يبقي الجلسات صالحة بعد إعادة النشر
-   - (اختياري) `DATA_DIR` = `/var/data` مع قرص دائم لحفظ الإدخالات اليدوية وسجل التدقيق
-   ملاحظة أمنية: لم تعد أي كلمة مرور مكتوبة داخل ملفات المشروع. إن لم تُضبط ADMIN_PASSWORD/VIEWER_PASSWORD
-   فسيولّد الخادم كلمة مرور عشوائية قوية ويطبعها مرة واحدة في سجل الإقلاع (Logs).
+   - `ADMIN_PASSWORD` = `<يتم ضبطها في متغير ADMIN_PASSWORD>`
 5. اضغط **Create Web Service** وانتظر حتى تظهر "Live".
 
 ## النتيجة
 - ستحصل على رابط ثابت مثل: `https://kaga-command-center.onrender.com`
-- يفتحه الفريق ← تظهر بوابة الدخول ← يدخلون باسم المستخدم وكلمة المرور التي ضبطتها في Render ← تظهر اللوحة.
+- يفتحه الفريق ← تظهر بوابة الدخول ← يدخلون بـ MAYADEEN / <يتم ضبطها في متغير ADMIN_PASSWORD> ← تظهر اللوحة.
 - لا أحد يرى أي شيء بدون تسجيل الدخول.
 - HTTPS مفعّل تلقائيًا من Render (الكوكي الآمن يعمل).
 

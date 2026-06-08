@@ -33,27 +33,49 @@ const SHEET_CSV_URL = process.env.SHEET_CSV_URL || "";  // رابط "النشر 
 const LOCAL_CSV = process.env.LOCAL_CSV || "";          // مسار ملف CSV محلي كحل احتياطي تام
 const SHEET_REFRESH_MS = Number(process.env.SHEET_REFRESH_MS || 15000);
 const OPENING_DATE = process.env.OPENING_DATE || "2026-09-27";
-
-/* ============ بيانات الدخول — تُقرأ من متغيّرات البيئة فقط ============
- * لم تعد أي كلمة مرور مكتوبة داخل الكود. إن لم تُضبط في إعدادات الاستضافة
- * (Render → Environment) يُولّد الخادم كلمة مرور عشوائية قوية ويطبعها في السجل
- * عند الإقلاع — فلا توجد كلمة مرور ثابتة معروفة يمكن تخمينها من الملفات. */
-const ADMIN_USERNAME  = process.env.ADMIN_USERNAME  || "MAYADEEN";
+const ADMIN_USERNAME = process.env.ADMIN_USERNAME || "MAYADEEN";
+// كلمة المرور الأساسية المثبّتة (يمكن تغييرها بمتغيّر البيئة ADMIN_PASSWORD).
+const GENERATED_ADMIN_PASSWORD = crypto.randomBytes(12).toString("base64url");
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || GENERATED_ADMIN_PASSWORD;
+// بيانات حساب المشاهد — يفتح اللوحة فقط بدون صلاحيات الأدمن
 const VIEWER_USERNAME = process.env.VIEWER_USERNAME || "KAG_VIEWER";
-let   _genAdminPw = false, _genViewerPw = false;
-const ADMIN_PASSWORD  = process.env.ADMIN_PASSWORD  || (function(){ _genAdminPw = true;  return "KAG-" + crypto.randomBytes(9).toString("base64").replace(/[^a-zA-Z0-9]/g,"").slice(0,12); })();
-const VIEWER_PASSWORD = process.env.VIEWER_PASSWORD || (function(){ _genViewerPw = true; return "VW-"  + crypto.randomBytes(9).toString("base64").replace(/[^a-zA-Z0-9]/g,"").slice(0,12); })();
-
-// سرّ توقيع الجلسات: يُفضّل ضبطه في البيئة (SESSION_SECRET) ليبقى الدخول صالحًا بعد إعادة التشغيل.
-let _genSessionSecret = false;
-const SESSION_SECRET = process.env.SESSION_SECRET || (function(){ _genSessionSecret = true; return crypto.randomBytes(48).toString("hex"); })();
+const GENERATED_VIEWER_PASSWORD = crypto.randomBytes(10).toString("base64url");
+const VIEWER_PASSWORD = process.env.VIEWER_PASSWORD || GENERATED_VIEWER_PASSWORD;
+const NOTIFICATION_WEBHOOK_URL = process.env.NOTIFICATION_WEBHOOK_URL || "";
+const EMAIL_WEBHOOK_URL = process.env.EMAIL_WEBHOOK_URL || "";
+const WHATSAPP_WEBHOOK_URL = process.env.WHATSAPP_WEBHOOK_URL || "";
+const EMAIL_FROM_NAME = process.env.EMAIL_FROM_NAME || "منصة حدائق الملك عبدالله";
+const TRACK_CONTACTS = parseJsonEnv(process.env.TRACK_CONTACTS || "{}", {});
+const NOTIFICATION_STORE = process.env.NOTIFICATION_STORE || path.join(__dirname, "notifications_store.json");
+const MANAGEMENT_STORE = process.env.MANAGEMENT_STORE || path.join(__dirname, "management_store.json");
+const AUDIT_STORE = process.env.AUDIT_STORE || path.join(__dirname, "audit_store.json");
+const TRACK_USERS = parseJsonEnv(process.env.TRACK_USERS || "{}", {});
+// مستخدمو مديري المسارات بصيغة مرنة. أمثلة:
+// TRACK_USERS={"أ":{"username":"planning","password":"***","name":"مدير التخطيط"}}
+// أو TRACK_USERS={"users":[{"username":"planning","password":"***","track":"أ","name":"مدير التخطيط"}]}
+let ROLE_USERS = [];
 
 const PUBLIC_DIR = path.join(__dirname, "public");
-// مجلد تخزين دائم للبيانات المُدخلة من اللوحة وسجل التدقيق
-const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data");
-const OVERRIDES_FILE = path.join(DATA_DIR, "overrides.json");
-const AUDIT_FILE = path.join(DATA_DIR, "audit.json");
+const sessions = new Map(); // sid -> { exp: timestamp, role: "viewer"|"admin" }
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
+function parseJsonEnv(value, fallback){
+  try{ return value ? JSON.parse(value) : fallback; }catch(e){ return fallback; }
+}
+function normalizeTrackUsers(raw){
+  const users=[];
+  if(!raw || typeof raw!=="object") return users;
+  const source = Array.isArray(raw) ? raw : (Array.isArray(raw.users) ? raw.users : Object.entries(raw).map(([track,cfg])=>Object.assign({track}, cfg||{})));
+  for(const u of source){
+    if(!u || !u.username || !u.password) continue;
+    const track = normalizeTrack(String(u.track||u.trackId||""));
+    if(!VALID_TRACKS.includes(track)) continue;
+    users.push({
+      username:String(u.username), password:String(u.password), role:"track-manager",
+      trackId:track, name:String(u.name||trackLabelById(track)), permissions:["read","write:own-track","notify:view","report:view","evidence:update"]
+    });
+  }
+  return users;
+}
 
 /* ============ إعدادات الأمان ============ */
 const REQUIRE_LOGIN = String(process.env.REQUIRE_LOGIN||"true").toLowerCase()!=="false"; // قفل كامل مفعّل افتراضيًا
@@ -85,11 +107,12 @@ function sameOrigin(req){
   if(!origin && !referer) return true;
   try{
     const src=new URL(origin || referer);
-    // اقبل نفس الـ host فقط، مع localhost للتطوير المحلي.
+    // قبل نفس الـ host فقط، مع السماح للبيئة المحلية أثناء التطوير.
     if(src.host===host) return true;
-    if((src.hostname==="localhost" || src.hostname==="127.0.0.1") && (host||"").startsWith(src.hostname)) return true;
+    const localHosts = new Set(["localhost","127.0.0.1","::1"]);
+    if(localHosts.has(src.hostname) && (String(host||"").startsWith("localhost") || String(host||"").startsWith("127.0.0.1"))) return true;
     return false;
-  }catch(e){ return false; }
+  }catch(e){ return false; } // عند الشك نرفض — حماية CSRF أكثر صرامة
 }
 function loginBlocked(ip){
   const a=loginAttempts.get(ip);
@@ -104,61 +127,6 @@ function recordLoginFail(ip){
   loginAttempts.set(ip,a);
 }
 function clearLoginFails(ip){ loginAttempts.delete(ip); }
-
-/* ============ جلسات بلا حالة (موقّعة) — تبقى صالحة بعد إعادة التشغيل ============
- * بدل تخزين الجلسات في ذاكرة الخادم (التي تُمسح عند كل إعادة تشغيل أو سكون)،
- * نوقّع رمز الجلسة بمفتاح سرّي. الرمز يحمل الدور وتاريخ الانتهاء، ويُتحقق منه
- * عند كل طلب. ضبط SESSION_SECRET في البيئة يجعل الدخول مستمرًا عبر عمليات النشر. */
-function signSession(role){
-  const payload = Buffer.from(JSON.stringify({ r:role, e:Date.now()+SESSION_TTL_MS, n:crypto.randomBytes(6).toString("hex") }))
-    .toString("base64").replace(/=+$/,"").replace(/\+/g,"-").replace(/\//g,"_");
-  const sig = crypto.createHmac("sha256", SESSION_SECRET).update(payload).digest("base64")
-    .replace(/=+$/,"").replace(/\+/g,"-").replace(/\//g,"_");
-  return payload + "." + sig;
-}
-function verifySession(token){
-  if(!token || token.indexOf(".")<0) return null;
-  const [payload, sig] = token.split(".");
-  const expected = crypto.createHmac("sha256", SESSION_SECRET).update(payload).digest("base64")
-    .replace(/=+$/,"").replace(/\+/g,"-").replace(/\//g,"_");
-  try{
-    const a = Buffer.from(sig), b = Buffer.from(expected);
-    if(a.length!==b.length || !crypto.timingSafeEqual(a,b)) return null;
-    const data = JSON.parse(Buffer.from(payload.replace(/-/g,"+").replace(/_/g,"/"),"base64").toString("utf8"));
-    if(!data || Date.now()>Number(data.e)) return null;
-    return { role: data.r };
-  }catch(e){ return null; }
-}
-
-/* ============ تخزين دائم: العناصر المُدخلة يدويًا + سجل التدقيق ============ */
-function ensureDataDir(){ try{ fs.mkdirSync(DATA_DIR,{recursive:true}); }catch(e){} }
-function readJsonFile(file, fallback){
-  try{ if(fs.existsSync(file)) return JSON.parse(fs.readFileSync(file,"utf8")); }catch(e){}
-  return fallback;
-}
-function writeJsonFile(file, data){
-  try{ ensureDataDir(); fs.writeFileSync(file, JSON.stringify(data,null,2)); return true; }
-  catch(e){ console.error("[persist] فشل الحفظ:", file, e.message); return false; }
-}
-let overrides = readJsonFile(OVERRIDES_FILE, []);   // عناصر يضيفها الأدمن من اللوحة
-let auditLog  = readJsonFile(AUDIT_FILE, []);       // سجل "مَن غيّر ماذا ومتى"
-const MANAGEMENT_FILE = path.join(DATA_DIR, "management-center.json");
-let managementCenter = readJsonFile(MANAGEMENT_FILE, {
-  notifications:[], actions:[], approvals:[], changes:[], evidence:[], meetings:[], zones:[], gallery:[], escalations:[]
-});
-function saveManagementCenter(){ writeJsonFile(MANAGEMENT_FILE, managementCenter); }
-function ensureManagementBuckets(){
-  ["notifications","actions","approvals","changes","evidence","meetings","zones","gallery","escalations"].forEach(k=>{
-    if(!Array.isArray(managementCenter[k])) managementCenter[k]=[];
-  });
-}
-function saveOverrides(){ writeJsonFile(OVERRIDES_FILE, overrides); }
-function audit(actor, action, detail){
-  const entry = { at:new Date().toISOString(), actor:actor||"—", action, detail:detail||"" };
-  auditLog.unshift(entry);
-  if(auditLog.length>500) auditLog = auditLog.slice(0,500);
-  writeJsonFile(AUDIT_FILE, auditLog);
-}
 
 /* ============ إعدادات المسارات (المصدر الوحيد لبيانات المسارات الثابتة) ============ */
 const TRACK_CONFIG = [
@@ -180,6 +148,7 @@ const TRACK_CONFIG = [
     accent:"#6454C8", planned:60 }
 ];
 const VALID_TRACKS = TRACK_CONFIG.map(t=>t.id);
+ROLE_USERS = normalizeTrackUsers(TRACK_USERS);
 
 /* ============ بيانات تجريبية احتياطية (تُستخدم فقط إذا لم يُضبط SHEET_ID) ============ */
 const SEED_ITEMS = [
@@ -205,14 +174,13 @@ function fallbackItems(){
   return SEED_ITEMS.slice();
 }
 function setStateFromItems(items){
-  const state = buildState(mergeOverrides(items));
+  const state = buildState(items);
   liveState = state;
   liveUpdatedAt = new Date().toISOString();
   liveVersion = liveVersion || 1;
   liveHash = crypto.createHash("sha1").update(JSON.stringify({tracks:state.tracks,items:state.items})).digest("hex");
 }
 let liveState = null;     // آخر حالة مبنية بنجاح
-let lastBaseItems = [];   // آخر عناصر مصدر معروفة (جدول/تجريبية) قبل دمج الإدخال اليدوي
 let liveVersion = 0;
 let liveUpdatedAt = null;
 let liveHash = "";
@@ -232,22 +200,6 @@ function normalizeTrack(v){
   const map={A:"أ",B:"ب",C:"ج",D:"د",E:"هـ","ه":"هـ","هـ":"هـ","ا":"أ","أ":"أ","ب":"ب","ج":"ج","د":"د"};
   return map[(v.toUpperCase?v.toUpperCase():v)]||map[v]||v;
 }
-function cleanManagementPayload(body){
-  return {
-    id: crypto.randomBytes(8).toString("hex"),
-    recipients: clean(body.recipients || body.to || "جميع مديري المسارات", 160),
-    priority: clean(body.priority || "متوسطة", 40),
-    type: clean(body.type || "متابعة", 60),
-    due: clean(body.due || "", 40),
-    updateDue: clean(body.updateDue || "", 40),
-    message: clean(body.message || body.title || "", 600),
-    title: clean(body.title || body.message || "", 220),
-    owner: clean(body.owner || body.recipients || "", 160),
-    status: clean(body.status || "مرسل", 60),
-    createdAt: new Date().toISOString()
-  };
-}
-
 function normalizeType(v){
   v=(v||"").trim().toLowerCase();
   if(["task","tasks","مهمة","مهام"].includes(v))return"tasks";
@@ -315,17 +267,6 @@ function rowsToItems(rows){
     items.push(item);
   });
   return items;
-}
-
-/* ============ دمج العناصر المُدخلة يدويًا مع عناصر الجدول ============ */
-function mergeOverrides(items){
-  if(!Array.isArray(overrides) || !overrides.length) return items;
-  const extra = overrides
-    .filter(o=>o && VALID_TRACKS.includes(o.track) && o.title)
-    .map(o=>({ track:o.track, type:normalizeType(o.type), title:clean(o.title,220),
-               owner:clean(o.owner,120), status:clean(o.status||"قيد التنفيذ",60),
-               due:clean(o.due,40), _src:"manual", _id:o.id }));
-  return items.concat(extra);
 }
 
 /* ============ بناء حالة اللوحة الكاملة من العناصر ============ */
@@ -429,29 +370,23 @@ async function refreshFromSheet(){
       items = rowsToItems(rows);
       if(!items.length) throw new Error("لم يتم العثور على صفوف صالحة (تحقق من عناوين الأعمدة: المسار/النوع/العنوان/المسؤول/الحالة/التاريخ).");
     }
-    lastBaseItems = items.slice();   // عناصر المصدر قبل دمج الإدخال اليدوي (لإعادة البناء لاحقًا)
-    applyBuiltState(buildState(mergeOverrides(items)));
+    const state = buildState(items);
+    const hash = crypto.createHash("sha1").update(JSON.stringify({tracks:state.tracks,items:state.items})).digest("hex");
+    if(hash !== liveHash){
+      liveHash = hash;
+      liveVersion += 1;
+      liveUpdatedAt = new Date().toISOString();
+      liveState = state;
+    }else if(!liveState){
+      liveState = state; liveUpdatedAt = new Date().toISOString(); liveVersion = liveVersion||1;
+    }
     lastSync = { ok:true, at:new Date().toISOString(), rows:rowsLen, error:null, source:lastSync.source };
   }catch(e){
     lastSync = { ok:false, at:new Date().toISOString(), rows:lastSync.rows||0, error:e.message||String(e), source:lastSync.source };
     if(!liveState){ // أول إقلاع فشل: اعرض بيانات القالب المرفقة حتى تكون اللوحة كاملة فورًا
-      lastBaseItems = fallbackItems();
-      applyBuiltState(buildState(mergeOverrides(lastBaseItems)));
+      setStateFromItems(fallbackItems());
     }
     console.error("[sheet-sync] فشل السحب:", e.message);
-  }
-}
-// يعيد بناء اللوحة من آخر عناصر مصدر معروفة + الإدخال اليدوي (لا يعتمد على نجاح سحب الجدول)
-function rebuildLiveState(){
-  applyBuiltState(buildState(mergeOverrides(lastBaseItems)));
-}
-// يطبّق حالة مبنية ويحدّث النسخة/البصمة عند تغيّر المحتوى فقط
-function applyBuiltState(state){
-  const hash = crypto.createHash("sha1").update(JSON.stringify({tracks:state.tracks,items:state.items})).digest("hex");
-  if(hash !== liveHash){
-    liveHash = hash; liveVersion += 1; liveUpdatedAt = new Date().toISOString(); liveState = state;
-  }else if(!liveState){
-    liveState = state; liveUpdatedAt = new Date().toISOString(); liveVersion = liveVersion||1;
   }
 }
 
@@ -503,19 +438,397 @@ function getCookie(req,name){
   },{})[name];
 }
 function isAuthed(req){
-  const tok=getCookie(req,"kag_session");
-  return !!verifySession(tok);
+  const sid=getCookie(req,"kag_session");
+  if(!sid||!sessions.has(sid)) return false;
+  const s=sessions.get(sid);
+  if(Date.now()>s.exp){ sessions.delete(sid); return false; }
+  return true;
 }
 function isAdmin(req){
-  const tok=getCookie(req,"kag_session");
-  const s=verifySession(tok);
-  return !!(s && s.role==="admin");
+  if(!REQUIRE_LOGIN) return true; // وضع الاختبار: السماح بإجراءات الأدمن عند تعطيل تسجيل الدخول صراحة
+  const sid=getCookie(req,"kag_session");
+  if(!sid||!sessions.has(sid)) return false;
+  const s=sessions.get(sid);
+  if(Date.now()>s.exp){ sessions.delete(sid); return false; }
+  return s.role==="admin";
 }
+function currentSession(req){
+  if(!REQUIRE_LOGIN) return {role:"admin", username:"local-dev", name:"وضع التطوير", exp:Date.now()+SESSION_TTL_MS};
+  const sid=getCookie(req,"kag_session");
+  if(!sid||!sessions.has(sid)) return null;
+  const s=sessions.get(sid);
+  if(Date.now()>s.exp){ sessions.delete(sid); return null; }
+  return s;
+}
+function isTrackManager(req){ const s=currentSession(req); return !!(s && s.role==="track-manager" && VALID_TRACKS.includes(s.trackId)); }
+function allowedTracks(req){
+  const s=currentSession(req);
+  if(!s) return [];
+  if(s.role==="admin" || s.role==="viewer") return VALID_TRACKS.slice();
+  if(s.role==="track-manager" && VALID_TRACKS.includes(s.trackId)) return [s.trackId];
+  return [];
+}
+function trackNameById(id){ const t=TRACK_CONFIG.find(x=>x.id===id); return t?t.name:String(id||""); }
+function trackIdByName(name){ const t=TRACK_CONFIG.find(x=>x.name===name || x.ar===name || x.lead===name); return t?t.id:normalizeTrack(name); }
+function filterStateForUser(req, st){
+  if(!st || isAdmin(req)) return st;
+  const allowed = new Set(allowedTracks(req));
+  if(!allowed.size || allowed.size===VALID_TRACKS.length) return st;
+  return Object.assign({}, st, {
+    tracks:(st.tracks||[]).filter(t=>allowed.has(t.id)),
+    items:(st.items||[]).filter(i=>allowed.has(normalizeTrack(i.track)))
+  });
+}
+function filterNotificationsForUser(req, notifications){
+  if(isAdmin(req)) return notifications;
+  const allowed = new Set(allowedTracks(req));
+  if(!allowed.size || allowed.size===VALID_TRACKS.length) return notifications;
+  return (notifications||[]).filter(n => (n.recipients||[]).some(r=>allowed.has(normalizeTrack(r))));
+}
+function itemBelongsToUser(req, item){
+  if(isAdmin(req)) return true;
+  const allowed = new Set(allowedTracks(req));
+  if(!allowed.size || allowed.size===VALID_TRACKS.length) return true;
+  const id = normalizeTrack(item.trackId || trackIdByName(item.track || item.owner || ""));
+  return allowed.has(id);
+}
+function filterManagementForUser(req, management){
+  if(!management || isAdmin(req)) return management;
+  const allowed = new Set(allowedTracks(req));
+  if(!allowed.size || allowed.size===VALID_TRACKS.length) return management;
+  const clone = Object.assign({}, management);
+  for(const key of ["actions","approvals","changes","meetings","zones","fieldEvidence"]){
+    if(Array.isArray(clone[key])) clone[key] = clone[key].filter(item=>itemBelongsToUser(req,item));
+  }
+  return clone;
+}
+function sessionInfo(req){
+  const s=currentSession(req);
+  if(!s) return {authenticated:false, role:"guest", username:"", name:"زائر", permissions:[], allowedTracks:[]};
+  const permissions = s.role==="admin"
+    ? ["read","write","notify","approve","audit","report","admin","all-tracks"]
+    : s.role==="track-manager"
+      ? (s.permissions || ["read","write:own-track","notify:view","report:view","evidence:update"])
+      : ["read","comment","report:view"];
+  return {authenticated:true, role:s.role, username:s.username||"", name:s.name||s.username||s.role, trackId:s.trackId||"", allowedTracks:allowedTracks(req), permissions};
+}
+function canWrite(req){ return isAdmin(req) || isTrackManager(req); }
+function canApprove(req){ return isAdmin(req) || isTrackManager(req); }
 // نسخة عامة من حالة المزامنة بدون تفاصيل داخلية حساسة
 function publicSync(){
   return { ok:lastSync.ok, at:lastSync.at, rows:lastSync.rows, source:lastSync.source,
            error: lastSync.error ? "تعذّر سحب البيانات من المصدر" : null };
 }
+
+
+
+/* ============ سجل التدقيق والصلاحيات ============ */
+function loadAuditLog(){
+  try{
+    if(fs.existsSync(AUDIT_STORE)){
+      const parsed = JSON.parse(fs.readFileSync(AUDIT_STORE,"utf8"));
+      return Array.isArray(parsed.events) ? parsed.events : [];
+    }
+  }catch(e){ console.warn("تعذر قراءة سجل التدقيق:", e.message); }
+  return [];
+}
+function saveAuditLog(events){
+  try{ fs.writeFileSync(AUDIT_STORE, JSON.stringify({updatedAt:new Date().toISOString(), events:events.slice(-1200)}, null, 2), "utf8"); }
+  catch(e){ console.warn("تعذر حفظ سجل التدقيق:", e.message); }
+}
+function addAudit(req, action, entity, details){
+  const info=sessionInfo(req);
+  const events=loadAuditLog();
+  events.push({id:crypto.randomUUID?crypto.randomUUID():crypto.randomBytes(16).toString("hex"), at:new Date().toISOString(), role:info.role, action:sanitizeText(action,100), entity:sanitizeText(entity,100), ip:clientIp(req), details:details||{}});
+  saveAuditLog(events);
+}
+function makeActionFromNotification(notification){
+  const firstRecipient = notification.recipients && notification.recipients[0];
+  const t = TRACK_CONFIG.find(x=>x.id===firstRecipient);
+  return {
+    id:`N-${notification.id}`,
+    sourceNotificationId:notification.id,
+    title:notification.title,
+    description:notification.message,
+    track:t?t.name:trackLabelById(firstRecipient),
+    owner:t?t.lead:"مدير المسار",
+    priority:notification.priority,
+    due:String(notification.dueAt||"").slice(0,10) || addDaysIso(1),
+    status:"جديد",
+    evidenceRequired:notification.actionType!=="متابعة",
+    createdAt:new Date().toISOString(),
+    channels:notification.channels,
+    closureNote:"",
+    evidenceUrl:""
+  };
+}
+function updateItemById(list, id, patch){
+  const idx=(list||[]).findIndex(x=>String(x.id)===String(id));
+  if(idx<0) return null;
+  list[idx]=Object.assign({}, list[idx], patch, {updatedAt:new Date().toISOString()});
+  return list[idx];
+}
+
+/* ============ مركز الإشعارات ============ */
+function loadNotificationsStore(){
+  try{
+    if(fs.existsSync(NOTIFICATION_STORE)){
+      const parsed = JSON.parse(fs.readFileSync(NOTIFICATION_STORE, "utf8"));
+      return Array.isArray(parsed.notifications) ? parsed.notifications : [];
+    }
+  }catch(e){ console.warn("تعذر قراءة سجل الإشعارات:", e.message); }
+  return [];
+}
+function saveNotificationsStore(notifications){
+  try{
+    fs.writeFileSync(NOTIFICATION_STORE, JSON.stringify({updatedAt:new Date().toISOString(), notifications}, null, 2), "utf8");
+  }catch(e){ console.warn("تعذر حفظ سجل الإشعارات:", e.message); }
+}
+function trackLabelById(id){
+  const t = TRACK_CONFIG.find(x=>x.id===id);
+  return t ? `${t.name} — ${t.lead}` : String(id || "غير محدد");
+}
+function validPriority(v){ return ["حرجة","عالية","متوسطة","منخفضة"].includes(v) ? v : "متوسطة"; }
+function validActionType(v){ return ["تسليم","تحديث","قرار","متابعة"].includes(v) ? v : "تحديث"; }
+function validChannels(v){
+  const allowed = new Set(["inApp","email","whatsapp","webhook"]);
+  const arr = Array.isArray(v) ? v.filter(x=>allowed.has(String(x))) : ["inApp"];
+  return Array.from(new Set(arr.length ? arr : ["inApp"]));
+}
+function contactForTrack(trackId){
+  const c = TRACK_CONTACTS[String(trackId)] || {};
+  return { trackId:String(trackId), label:trackLabelById(trackId), email:String(c.email||""), whatsapp:String(c.whatsapp||c.phone||"") };
+}
+function splitList(v){ return String(v||"").split(/[،,;\n]+/).map(x=>x.trim()).filter(Boolean).slice(0,50); }
+async function postJson(url, payload, channel){
+  try{
+    const r = await fetch(url, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(payload)});
+    return {channel, ok:r.ok, status:r.status, at:new Date().toISOString()};
+  }catch(e){ return {channel, ok:false, error:"تعذر الإرسال", at:new Date().toISOString()}; }
+}
+async function deliverNotification(notification){
+  const channels = validChannels(notification.channels);
+  const contacts = notification.recipients.map(contactForTrack);
+  const delivery = [{channel:"داخل النظام", ok:true, at:new Date().toISOString()}];
+  if(channels.includes("email")){
+    const emailRecipients = contacts.map(c=>c.email).filter(Boolean).concat(notification.extraEmails||[]);
+    if(EMAIL_WEBHOOK_URL){
+      delivery.push(await postJson(EMAIL_WEBHOOK_URL, {source:"KAG", type:"email", fromName:EMAIL_FROM_NAME, recipients:emailRecipients, contacts, notification}, "البريد الإلكتروني"));
+    }else{
+      delivery.push({channel:"البريد الإلكتروني", ok:false, skipped:true, reason:"لم يتم ضبط EMAIL_WEBHOOK_URL", recipients:emailRecipients.length, at:new Date().toISOString()});
+    }
+  }
+  if(channels.includes("whatsapp")){
+    const whatsappRecipients = contacts.map(c=>c.whatsapp).filter(Boolean).concat(notification.extraWhatsApp||[]);
+    if(WHATSAPP_WEBHOOK_URL){
+      delivery.push(await postJson(WHATSAPP_WEBHOOK_URL, {source:"KAG", type:"whatsapp", recipients:whatsappRecipients, contacts, notification}, "واتساب"));
+    }else{
+      delivery.push({channel:"واتساب", ok:false, skipped:true, reason:"لم يتم ضبط WHATSAPP_WEBHOOK_URL", recipients:whatsappRecipients.length, at:new Date().toISOString()});
+    }
+  }
+  if(channels.includes("webhook")){
+    if(NOTIFICATION_WEBHOOK_URL){
+      delivery.push(await postJson(NOTIFICATION_WEBHOOK_URL, {source:"KAG", type:"general-webhook", notification}, "Webhook"));
+    }else{
+      delivery.push({channel:"Webhook", ok:false, skipped:true, reason:"لم يتم ضبط NOTIFICATION_WEBHOOK_URL", at:new Date().toISOString()});
+    }
+  }
+  delivery.push({channel:"سجل المتابعة", ok:true, at:new Date().toISOString()});
+  return delivery;
+}
+function sanitizeText(v, max=1200){
+  return String(v || "").replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0,max);
+}
+
+
+/* ============ مراكز الإدارة التشغيلية المتقدمة ============ */
+function addDaysIso(days){ const d=new Date(); d.setDate(d.getDate()+days); return d.toISOString().slice(0,10); }
+function seedManagementStore(){
+  const tracks = TRACK_CONFIG;
+  return {
+    updatedAt:new Date().toISOString(),
+    actions: tracks.flatMap((t,i)=>[
+      {id:`A-${t.id}-1`, title:`إغلاق تحديث ${t.name}`, track:t.name, owner:t.lead, priority:i%3===0?"حرجة":i%3===1?"عالية":"متوسطة", due:addDaysIso(i-1), status:i%4===0?"متأخر":i%4===1?"قيد العمل":"جديد", evidenceRequired:true},
+      {id:`A-${t.id}-2`, title:`رفع دليل جاهزية ${t.name}`, track:t.name, owner:t.lead, priority:"متوسطة", due:addDaysIso(i+2), status:i%2?"قيد العمل":"جديد", evidenceRequired:true}
+    ]),
+    approvals: tracks.map((t,i)=>({id:`AP-${t.id}`, title:`اعتماد حزمة ${t.name}`, type:i%2?"اعتماد خطة":"اعتماد مورد/تصريح", owner:t.lead, track:t.name, due:addDaysIso(i+1), impact:i<2?"مرتفع":"متوسط", status:i%3===0?"متأخر":"قيد الاعتماد"})),
+    changes:[
+      {id:"CH-01",title:"تعديل نطاق جاهزية نقطة تشغيل",track:"التشغيل",time:"متوسط",cost:"منخفض",quality:"متوسط",risk:"مرتفع",status:"قيد الدراسة"},
+      {id:"CH-02",title:"زيادة فرق النظافة في أوقات الذروة",track:"التجربة",time:"منخفض",cost:"متوسط",quality:"مرتفع",risk:"منخفض",status:"مقبول مشروط"},
+      {id:"CH-03",title:"تغيير مورد دعم ميداني احتياطي",track:"الموردين",time:"متوسط",cost:"متوسط",quality:"متوسط",risk:"متوسط",status:"يحتاج اعتماد"}
+    ],
+    meetings:[
+      {id:"M-01",title:"اجتماع تشغيل يومي",date:addDaysIso(0),attendees:8,decisions:4,actions:6,status:"مخرجات مفتوحة"},
+      {id:"M-02",title:"مراجعة السلامة والتصاريح",date:addDaysIso(1),attendees:6,decisions:3,actions:5,status:"يتطلب متابعة"},
+      {id:"M-03",title:"جلسة الموردين الحرجة",date:addDaysIso(2),attendees:7,decisions:2,actions:4,status:"مجدول"}
+    ],
+    zones:["البوابات","المواقف","الممرات","مناطق الضيافة","دورات المياه","نقاط الإسعاف","غرف التشغيل","الساحات الخارجية"].map((z,i)=>({zone:z,operations:92-i*3,safety:88-i*2,cleaning:85+i%3*3,experience:90-i,open:i%4+1,status:i<2?"جاهزة":i<5?"جاهزة بشروط":"تحتاج متابعة"})),
+    fieldEvidence:["قبل/بعد تجهيز البوابة","إغلاق ملاحظة سلامة","اختبار إنارة المسار","جاهزية نقطة إسعاف","نظافة منطقة الضيافة","تقدم أعمال المورد"].map((x,i)=>({id:`FE-${i+1}`,title:x,type:i%2?"صورة إغلاق":"صورة تقدم",track:tracks[i%tracks.length].name,zone:["البوابات","الممرات","الضيافة","الإسعاف"][i%4],date:addDaysIso(-i),status:i%3?"معتمد":"بانتظار مراجعة"}))
+  };
+}
+function loadManagementStore(){
+  try{
+    if(fs.existsSync(MANAGEMENT_STORE)){
+      const parsed=JSON.parse(fs.readFileSync(MANAGEMENT_STORE,"utf8"));
+      if(parsed && typeof parsed==="object") return Object.assign(seedManagementStore(), parsed);
+    }
+  }catch(e){ console.warn("تعذر قراءة سجل مراكز الإدارة:", e.message); }
+  return seedManagementStore();
+}
+function saveManagementStore(management){
+  try{ fs.writeFileSync(MANAGEMENT_STORE, JSON.stringify(Object.assign({}, management, {updatedAt:new Date().toISOString()}), null, 2), "utf8"); }
+  catch(e){ console.warn("تعذر حفظ سجل مراكز الإدارة:", e.message); }
+}
+function computeDataQuality(req){
+  const st = filterStateForUser(req, liveState || buildState(fallbackItems()));
+  const management = filterManagementForUser(req, loadManagementStore());
+  const notifications = filterNotificationsForUser(req, loadNotificationsStore());
+  const findings=[];
+  const actions = management.actions || [];
+  const approvals = management.approvals || [];
+  const items = st.items || [];
+  const today = new Date(); today.setHours(0,0,0,0);
+  const missingOwner = actions.filter(a=>!a.owner).length + items.filter(i=>!i.owner).length;
+  const missingDue = actions.filter(a=>!a.due).length + approvals.filter(a=>!a.due).length + items.filter(i=>!i.due).length;
+  const overdueActions = actions.filter(a=>a.due && Date.parse(a.due)<today.getTime() && !/مغلق|مكتمل|معتمد/.test(a.status||"")).length;
+  const noEvidenceClosed = actions.filter(a=>/مغلق|مكتمل/.test(a.status||"") && a.evidenceRequired && !a.evidenceUrl).length;
+  const risksWithoutAction = items.filter(i=>normalizeType(i.type)==="risks" && !i.owner).length;
+  const staleSync = lastSync.at ? ((Date.now()-Date.parse(lastSync.at))/3600000>24) : true;
+  if(missingOwner) findings.push({type:"مالك ناقص", count:missingOwner, severity:"عالية", recommendation:"تحديد مالك لكل مهمة ومخاطرة قبل اعتماد التقارير."});
+  if(missingDue) findings.push({type:"موعد ناقص", count:missingDue, severity:"متوسطة", recommendation:"تحديد موعد لكل مهمة واعتماد وقرار."});
+  if(overdueActions) findings.push({type:"مهام متأخرة", count:overdueActions, severity:"حرجة", recommendation:"تفعيل التصعيد وربط كل مهمة متأخرة بتحديث أو دليل."});
+  if(noEvidenceClosed) findings.push({type:"إغلاقات بدون دليل", count:noEvidenceClosed, severity:"عالية", recommendation:"منع اعتماد الإغلاق بدون رابط دليل أو مرفق."});
+  if(risksWithoutAction) findings.push({type:"مخاطر بلا مالك", count:risksWithoutAction, severity:"حرجة", recommendation:"ربط كل مخاطرة بمالك وإجراء معالجة."});
+  if(staleSync) findings.push({type:"مزامنة قديمة", count:1, severity:"متوسطة", recommendation:"مراجعة اتصال Google Sheet أو تنفيذ تحديث يدوي."});
+  const penalty = findings.reduce((sum,f)=>sum + f.count * (f.severity==="حرجة"?9:f.severity==="عالية"?6:3), 0);
+  const score = Math.max(0, Math.min(100, 100 - penalty));
+  return {ok:true, score, grade:score>=90?"موثوقة":score>=75?"قابلة للاعتماد مع ملاحظات":score>=60?"تحتاج تنظيف":"غير جاهزة للاعتماد", findings, counts:{actions:actions.length, approvals:approvals.length, notifications:notifications.length, items:items.length}, sync:publicSync(), generatedAt:new Date().toISOString()};
+}
+function computeOperationalSummary(req){
+  const management = filterManagementForUser(req, loadManagementStore());
+  const st = filterStateForUser(req, liveState || buildState(fallbackItems()));
+  const quality = computeDataQuality(req);
+  const actions = management.actions||[];
+  const approvals = management.approvals||[];
+  const openActions = actions.filter(a=>!/مغلق|مكتمل/.test(a.status||""));
+  const overdue = openActions.filter(a=>a.due && Date.parse(a.due)<Date.now());
+  const critical = openActions.filter(a=>a.priority==="حرجة");
+  const pendingApprovals = approvals.filter(a=>!/معتمد|مغلق/.test(a.status||""));
+  const tracks = st.tracks || [];
+  const avgProgress = tracks.length ? Math.round(tracks.reduce((s,t)=>s+Number(t.progress||0),0)/tracks.length) : 0;
+  const recommendation = critical.length || overdue.length
+    ? "يوصى بعقد مراجعة تشغيلية قصيرة اليوم لإغلاق المهام الحرجة والمتأخرة قبل تحديث التقرير القادم."
+    : pendingApprovals.length
+      ? "الوضع مستقر تشغيليًا، مع الحاجة إلى تسريع الاعتمادات المفتوحة."
+      : "الوضع مستقر وجاهز للاستمرار وفق دورة المتابعة الحالية.";
+  return {ok:true, generatedAt:new Date().toISOString(), avgProgress, dataQuality:quality.score, openActions:openActions.length, overdue:overdue.length, critical:critical.length, pendingApprovals:pendingApprovals.length, recommendation, nextActions:openActions.slice(0,8).map(a=>({id:a.id,title:a.title,owner:a.owner,track:a.track,priority:a.priority,due:a.due,status:a.status}))};
+}
+function normalizeManagementItem(section, body){
+  const common={id: crypto.randomUUID?crypto.randomUUID():crypto.randomBytes(16).toString("hex"), createdAt:new Date().toISOString()};
+  if(section==="actions") return Object.assign(common,{title:sanitizeText(body.title,180), track:sanitizeText(body.track,80), owner:sanitizeText(body.owner,100), priority:validPriority(body.priority), due:sanitizeText(body.due,30), status:sanitizeText(body.status||"جديد",40), evidenceRequired:!!body.evidenceRequired});
+  if(section==="approvals") return Object.assign(common,{title:sanitizeText(body.title,180), type:sanitizeText(body.type,80), track:sanitizeText(body.track,80), owner:sanitizeText(body.owner,100), due:sanitizeText(body.due,30), impact:sanitizeText(body.impact||"متوسط",40), status:sanitizeText(body.status||"قيد الاعتماد",40)});
+  if(section==="changes") return Object.assign(common,{title:sanitizeText(body.title,180), track:sanitizeText(body.track,80), time:sanitizeText(body.time||"متوسط",40), cost:sanitizeText(body.cost||"متوسط",40), quality:sanitizeText(body.quality||"متوسط",40), risk:sanitizeText(body.risk||"متوسط",40), status:sanitizeText(body.status||"قيد الدراسة",40)});
+  if(section==="meetings") return Object.assign(common,{title:sanitizeText(body.title,180), date:sanitizeText(body.date||addDaysIso(0),30), attendees:Number(body.attendees||0), decisions:Number(body.decisions||0), actions:Number(body.actions||0), status:sanitizeText(body.status||"مخرجات مفتوحة",60)});
+  if(section==="zones") return Object.assign(common,{zone:sanitizeText(body.zone,100), operations:Number(body.operations||0), safety:Number(body.safety||0), cleaning:Number(body.cleaning||0), experience:Number(body.experience||0), open:Number(body.open||0), status:sanitizeText(body.status||"تحتاج متابعة",60)});
+  if(section==="fieldEvidence") return Object.assign(common,{title:sanitizeText(body.title,180), type:sanitizeText(body.type||"دليل ميداني",80), track:sanitizeText(body.track,80), zone:sanitizeText(body.zone,80), date:sanitizeText(body.date||addDaysIso(0),30), status:sanitizeText(body.status||"بانتظار مراجعة",60), evidenceUrl:sanitizeText(body.evidenceUrl||"",500)});
+  return Object.assign(common, body||{});
+}
+
+
+/* ============ مركز جاهزية النشر والتشغيل + النسخ والتصدير ============ */
+function csvEscape(v){
+  const x = String(v==null?"":v);
+  return /[",\n\r]/.test(x) ? '"' + x.replace(/"/g,'""') + '"' : x;
+}
+function toCsv(rows, columns){
+  const header = columns.map(c=>csvEscape(c.label)).join(',');
+  const body = (rows||[]).map(row => columns.map(c=>csvEscape(typeof c.value === 'function' ? c.value(row) : row[c.key])).join(',')).join('\n');
+  return '\ufeff' + header + (body ? '\n' + body : '');
+}
+function sendText(res,status,text,type="text/plain; charset=utf-8",headers={}){
+  res.writeHead(status, Object.assign({"Content-Type":type,"Cache-Control":"no-store"}, headers));
+  return res.end(text);
+}
+function deploymentCheck(name, ok, weight, recommendation){ return {name, ok:!!ok, weight:Number(weight||1), recommendation: recommendation||""}; }
+function computeDeploymentReadiness(){
+  const publicFiles = ["index.html","style.css","script.js","manifest.webmanifest","service-worker.js","UI_VERSION.json"].map(f=>({file:f, exists:fs.existsSync(path.join(PUBLIC_DIR,f))}));
+  const management = loadManagementStore();
+  const notifications = loadNotificationsStore();
+  const audits = loadAuditLog();
+  const checks = [
+    deploymentCheck("ملفات الواجهة الرئيسية موجودة", publicFiles.every(x=>x.exists), 10, "تأكد من وجود public/index.html و style.css و script.js في جذر المشروع المفكوك."),
+    deploymentCheck("خادم Node يعمل وملف server.js موجود", fs.existsSync(path.join(__dirname,"server.js")), 8, "يجب أن يكون server.js في جذر المستودع وليس داخل مجلد فرعي."),
+    deploymentCheck("package.json موجود", fs.existsSync(path.join(__dirname,"package.json")), 6, "Render يحتاج package.json في الجذر لتثبيت الحزم."),
+    deploymentCheck("render.yaml موجود", fs.existsSync(path.join(__dirname,"render.yaml")), 4, "وجود render.yaml يقلل أخطاء إعدادات Render."),
+    deploymentCheck("محرك التقارير Python موجود", fs.existsSync(path.join(__dirname,"generate_report.py")), 7, "يجب بقاء generate_report.py في الجذر لتفعيل تقارير PPTX."),
+    deploymentCheck("مجلد report_engine موجود", fs.existsSync(path.join(__dirname,"report_engine")), 6, "مطلوب للتقارير الشاملة والقوالب الاحتياطية."),
+    deploymentCheck("PWA مفعلة", fs.existsSync(path.join(PUBLIC_DIR,"manifest.webmanifest")) && fs.existsSync(path.join(PUBLIC_DIR,"service-worker.js")), 5, "مطلوب لتجربة إضافة المنصة على شاشة الجوال."),
+    deploymentCheck("نموذج بيانات Google Sheet موجود", fs.existsSync(path.join(PUBLIC_DIR,"KAG_GoogleSheet_Template.csv")), 5, "استخدم القالب لبناء مصدر البيانات الحقيقي."),
+    deploymentCheck("مصدر بيانات حي أو CSV احتياطي محدد", !!(SHEET_ID || SHEET_CSV_URL || LOCAL_CSV), 8, "اضبط SHEET_ID أو SHEET_CSV_URL في Render."),
+    deploymentCheck("متغيرات تسجيل الدخول مفعلة", !!(ADMIN_USERNAME && ADMIN_PASSWORD && VIEWER_USERNAME && VIEWER_PASSWORD), 7, "اضبط كلمات المرور من Environment Variables ولا تضعها في GitHub."),
+    deploymentCheck("مستخدمو المسارات مهيؤون أو يمكن تشغيلهم", ROLE_USERS.length>0 || !REQUIRE_LOGIN, 5, "اضبط ROLE_USERS_JSON لمديري المسارات عند التشغيل الرسمي."),
+    deploymentCheck("مركز الإشعارات يعمل", Array.isArray(notifications), 5, "تأكد من صلاحية الكتابة على notifications_store.json في بيئة التشغيل."),
+    deploymentCheck("مركز المهام والاعتمادات يعمل", Array.isArray(management.actions) && Array.isArray(management.approvals), 6, "تأكد من صلاحية الكتابة على management_store.json."),
+    deploymentCheck("سجل التدقيق يعمل", Array.isArray(audits), 5, "تأكد من صلاحية الكتابة على audit_store.json."),
+    deploymentCheck("ربط البريد أو واتساب أو Webhook جاهز", !!(EMAIL_WEBHOOK_URL || WHATSAPP_WEBHOOK_URL || NOTIFICATION_WEBHOOK_URL), 4, "اختياري، لكن يرفع جاهزية التشغيل الخارجي."),
+    deploymentCheck("حالة المزامنة سليمة أو يوجد fallback", !!liveState, 6, "يجب أن ترجع /api/state بيانات صالحة دائمًا حتى عند تعطل المصدر."),
+  ];
+  const total = checks.reduce((s,c)=>s+c.weight,0);
+  const earned = checks.reduce((s,c)=>s+(c.ok?c.weight:0),0);
+  const score = Math.round((earned/Math.max(total,1))*100);
+  return {ok:true, score, grade:score>=95?"جاهزة للنشر الرسمي":score>=85?"جاهزة مع ملاحظات":score>=70?"تحتاج استكمال قبل العرض":"غير جاهزة للنشر", generatedAt:new Date().toISOString(), checks, files:publicFiles, environment:{loginRequired:REQUIRE_LOGIN, sheetConfigured:!!SHEET_ID, csvUrlConfigured:!!SHEET_CSV_URL, localCsvConfigured:!!LOCAL_CSV, emailWebhookConfigured:!!EMAIL_WEBHOOK_URL, whatsappWebhookConfigured:!!WHATSAPP_WEBHOOK_URL, notificationWebhookConfigured:!!NOTIFICATION_WEBHOOK_URL, roleUsersConfigured:ROLE_USERS.length}};
+}
+
+function computeGoLiveControl(req){
+  const readiness = computeDeploymentReadiness();
+  const quality = computeDataQuality(req);
+  const summary = computeOperationalSummary(req);
+  const env = readiness.environment || {};
+  const gates = [
+    {name:"رفع الملفات مفكوكة على GitHub", ok:readiness.checks.some(c=>c.name.includes("ملفات الواجهة") && c.ok), criteria:"وجود server.js و public/index.html و package.json في جذر المستودع", owner:"الفريق التقني"},
+    {name:"تفعيل تسجيل الدخول والصلاحيات", ok:env.loginRequired && !!ADMIN_PASSWORD, criteria:"ADMIN / VIEWER / Track Managers مضبوطة من متغيرات البيئة", owner:"الفريق التقني"},
+    {name:"مصدر البيانات جاهز", ok:env.sheetConfigured || env.csvUrlConfigured || env.localCsvConfigured, criteria:"Google Sheet أو CSV مباشر متصل ويعيد بيانات", owner:"مسؤول البيانات"},
+    {name:"مركز الإشعارات جاهز", ok:env.emailWebhookConfigured || env.whatsappWebhookConfigured || env.notificationWebhookConfigured, criteria:"Webhook واحد على الأقل مفعّل للإرسال الخارجي", owner:"الفريق التقني"},
+    {name:"دورة التشغيل قابلة للاختبار", ok:(summary.openActions>=0 && quality.score>=70), criteria:"إشعار ← مهمة ← تصعيد ← دليل ← اعتماد ← تقرير", owner:"مدير المشروع"},
+    {name:"جودة البيانات قابلة للاعتماد", ok:quality.score>=85, criteria:"لا توجد فجوات جوهرية في المالك أو الموعد أو الدليل", owner:"مدير البيانات"},
+    {name:"النسخ والتصدير مفعلة", ok:true, criteria:"Backup JSON وCSV للمهام والاعتمادات والتدقيق متاحة", owner:"الفريق التقني"}
+  ];
+  const gateScore = Math.round(gates.filter(g=>g.ok).length / Math.max(gates.length,1) * 100);
+  const score = Math.round(gateScore*.45 + readiness.score*.35 + quality.score*.20);
+  const actions = [];
+  if(!env.emailWebhookConfigured && !env.whatsappWebhookConfigured && !env.notificationWebhookConfigured) actions.push({title:"ربط قناة إرسال خارجية", detail:"اضبط EMAIL_WEBHOOK_URL أو WHATSAPP_WEBHOOK_URL أو NOTIFICATION_WEBHOOK_URL في Render ثم اختبر الإرسال من صفحة جاهزية النشر."});
+  if(quality.score<85) actions.push({title:"رفع موثوقية البيانات", detail:"أغلق الحقول الناقصة: المالك، تاريخ الاستحقاق، الدليل، وربط المخاطر بإجراءات معالجة."});
+  if(!env.roleUsersConfigured) actions.push({title:"تعريف مديري المسارات", detail:"اضبط TRACK_USERS بصيغة JSON حتى يرى كل مدير مسار مهامه وصلاحياته بوضوح."});
+  actions.push({title:"تشغيل تجربة أول أسبوع", detail:"استخدم الخطة أدناه لتجربة النظام يوميًا قبل العرض الرسمي، وصدّر تقرير نهاية الأسبوع."});
+  const weekPlan = [
+    {day:"اليوم 1", output:"رفع البيانات الحقيقية وربط Google Sheet", meeting:"جلسة تشغيل 30 دقيقة", measure:"نجاح /api/state وجودة البيانات فوق 80%"},
+    {day:"اليوم 2", output:"إرسال إشعارات فعلية لمديري المسارات", meeting:"متابعة الإشعارات", measure:"كل إشعار يتحول إلى مهمة"},
+    {day:"اليوم 3", output:"إغلاق مهام بدليل", meeting:"مراجعة الأدلة", measure:"70% من الإغلاقات لها دليل"},
+    {day:"اليوم 4", output:"اختبار التصعيد والاعتمادات", meeting:"جلسة قرارات", measure:"إغلاق اعتمادين أو توثيق سبب التأخير"},
+    {day:"اليوم 5", output:"توليد تقرير تشغيلي", meeting:"عرض داخلي", measure:"تقرير PDF/PPTX أو CSV جاهز للإرسال"},
+    {day:"اليوم 6", output:"اختبار الجوال وPWA", meeting:"تجربة مستخدم", measure:"القائمة والبطاقات واضحة على iPhone/Android"},
+    {day:"اليوم 7", output:"اعتماد النسخة المستقرة", meeting:"Go-Live Review", measure:"درجة الإطلاق فوق 90%"}
+  ];
+  const handover = [
+    {item:"رابط Render النهائي", status:"يسلمه الفني بعد النشر"},
+    {item:"حسابات الأدمن والمشاهد ومديري المسارات", status:env.loginRequired?"مطلوبة من Render ENV":"تسجيل الدخول معطل"},
+    {item:"Google Sheet التشغيلي", status:env.sheetConfigured?"مربوط":"يحتاج ضبط"},
+    {item:"قنوات الإشعار", status:(env.emailWebhookConfigured||env.whatsappWebhookConfigured)?"جاهزة جزئيًا":"تحتاج ربط"},
+    {item:"نسخة احتياطية أولية", status:"متاحة من /api/backup"}
+  ];
+  const acceptanceRisks = [
+    {risk:"رفع ZIP بدل محتويات المشروع", treatment:"فك الضغط ورفع الملفات في الجذر، ثم Clear build cache & deploy."},
+    {risk:"ظهور واجهة قديمة بسبب كاش Render", treatment:"استخدم Manual Deploy مع Clear build cache وتأكد من public/UI_VERSION.json."},
+    {risk:"بيانات تجريبية بدل بيانات حقيقية", treatment:"اضبط SHEET_CSV_URL أو SHEET_ID وتأكد من عدد الصفوف في صفحة حالة النظام."},
+    {risk:"فشل إرسال واتساب", treatment:"واتساب يحتاج مزود WhatsApp Business API أو Webhook وسيط؛ النظام جاهز للإرسال وليس مزودًا بحد ذاته."}
+  ];
+  return {ok:true, version:"1000.5.0", generatedAt:new Date().toISOString(), score, grade:score>=95?"جاهز للإطلاق التشغيلي":score>=85?"جاهز مع ملاحظات محدودة":score>=70?"يحتاج استكمال قبل العرض":"غير جاهز", readinessScore:readiness.score, dataQualityScore:quality.score, operationalSummary:summary, gates, actions, weekPlan, handover, acceptanceRisks};
+}
+
+function makeBackupPayload(req){
+  return {meta:{name:"KAG Operational Platform Backup", version:"1000.5.0", generatedAt:new Date().toISOString(), generatedBy:sessionInfo(req)}, state:{liveVersion, liveUpdatedAt, sync:lastSync, publicState:filterStateForUser(req, liveState || buildState(fallbackItems()))}, stores:{notifications:loadNotificationsStore(), management:loadManagementStore(), auditLog:loadAuditLog().slice(-500)}};
+}
+
 function mimeType(file){
   const ext=path.extname(file).toLowerCase();
   return {".html":"text/html; charset=utf-8",".js":"application/javascript; charset=utf-8",
@@ -542,7 +855,7 @@ let lastForcedRefresh=0;
 function serveLoginGate(res){
   var html = `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>تسجيل الدخول — مركز القيادة المباشر</title>
+<title>تسجيل الدخول — منصة التحليل التشغيلي</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0;font-family:'Segoe UI',Tahoma,Arial,sans-serif}
 body{min-height:100vh;display:flex;align-items:center;justify-content:center;background:radial-gradient(circle at 30% 20%,#13293D,#0D1B2A 70%);color:#EAF0F7;padding:20px}
@@ -558,7 +871,7 @@ button:disabled{opacity:.6;cursor:default}
 .err{margin-top:14px;color:#FF6B6B;font-size:13px;min-height:18px;text-align:center}
 </style></head><body>
 <div class="card">
-  <div class="brand"><h1>مركز القيادة المباشر</h1><p>حدائق الملك عبدالله — سجّل دخولك (Viewer أو Admin)</p></div>
+  <div class="brand"><h1>منصة التحليل التشغيلي</h1><p>حدائق الملك عبدالله — سجّل دخولك (Viewer أو Admin)</p></div>
   <form id="f" autocomplete="off">
     <label>اسم المستخدم</label>
     <input id="u" type="text" required autocomplete="username">
@@ -595,13 +908,206 @@ const server=http.createServer(async (req,res)=>{
     // الحالة الحية (للقراءة) — مشتقة من Google Sheet
     if(req.method==="GET" && url==="/api/state"){
       if(REQUIRE_LOGIN && !isAuthed(req)) return sendJson(res,401,{error:"يلزم تسجيل الدخول"});
-      return sendJson(res,200,{version:liveVersion,updatedAt:liveUpdatedAt,state:liveState,sync:publicSync()});
+      return sendJson(res,200,{version:liveVersion,updatedAt:liveUpdatedAt,state:filterStateForUser(req, liveState),sync:publicSync(), user:sessionInfo(req)});
+    }
+
+
+    // مركز الإشعارات: قراءة للجميع، إنشاء للأدمن فقط
+    if(url==="/api/notifications"){
+      if(REQUIRE_LOGIN && !isAuthed(req)) return sendJson(res,401,{error:"يلزم تسجيل الدخول"});
+      if(req.method==="GET"){
+        return sendJson(res,200,{ok:true, notifications:filterNotificationsForUser(req, loadNotificationsStore())});
+      }
+      if(req.method==="POST"){
+        if(!sameOrigin(req)) return sendJson(res,403,{error:"مصدر غير موثوق"});
+        if(!isAdmin(req)) return sendJson(res,403,{error:"صلاحية أدمن مطلوبة لإرسال الإشعارات"});
+        let body={};
+        const raw=await readBody(req);
+        try{ body=raw?JSON.parse(raw):{}; }catch(e){ return sendJson(res,400,{error:"طلب غير صالح"}); }
+        const requested = Array.isArray(body.recipients) ? body.recipients.map(x=>String(x)) : [];
+        const recipients = body.mode==="all" ? VALID_TRACKS.slice() : requested.filter(x=>VALID_TRACKS.includes(x));
+        if(!recipients.length) return sendJson(res,400,{error:"يجب اختيار مستلم واحد على الأقل"});
+        const title = sanitizeText(body.title, 140);
+        const message = sanitizeText(body.message, 1600);
+        if(!title || !message) return sendJson(res,400,{error:"العنوان ونص الإشعار مطلوبان"});
+        const notification = {
+          id: crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString("hex"),
+          mode: ["individual","group","all"].includes(body.mode) ? body.mode : "individual",
+          recipients,
+          recipientLabels: recipients.map(trackLabelById),
+          title, message,
+          priority: validPriority(body.priority),
+          actionType: validActionType(body.actionType),
+          dueAt: sanitizeText(body.dueAt, 40),
+          updateAt: sanitizeText(body.updateAt, 40),
+          channels: validChannels(body.channels),
+          extraEmails: splitList(body.extraEmails),
+          extraWhatsApp: splitList(body.extraWhatsApp),
+          status:"مرسل",
+          createdAt:new Date().toISOString(),
+          createdBy:isAdmin(req)?"admin":"viewer",
+          delivery:[]
+        };
+        notification.delivery = await deliverNotification(notification);
+        const notifications = loadNotificationsStore();
+        notifications.push(notification);
+        saveNotificationsStore(notifications.slice(-500));
+        // تحويل الإشعار تلقائيًا إلى مهمة قابلة للإغلاق إذا كان المطلوب تسليم/تحديث/قرار
+        const management = loadManagementStore();
+        management.actions = Array.isArray(management.actions) ? management.actions : [];
+        if(notification.actionType !== "متابعة"){ management.actions.push(makeActionFromNotification(notification)); saveManagementStore(management); }
+        addAudit(req, "إنشاء إشعار", "notifications", {id:notification.id, title:notification.title, recipients:notification.recipients, priority:notification.priority, actionType:notification.actionType});
+        return sendJson(res,201,{ok:true, notification, notifications:filterNotificationsForUser(req, loadNotificationsStore()), management:filterManagementForUser(req, loadManagementStore())});
+      }
+      return sendJson(res,405,{error:"الطريقة غير مسموحة"});
+    }
+
+
+
+    // مراكز الإدارة التشغيلية المتقدمة: قراءة للجميع، إضافة للأدمن فقط
+    if(url==="/api/management-center"){
+      if(REQUIRE_LOGIN && !isAuthed(req)) return sendJson(res,401,{error:"يلزم تسجيل الدخول"});
+      if(req.method==="GET") return sendJson(res,200,{ok:true, management:filterManagementForUser(req, loadManagementStore())});
+      if(req.method==="POST"){
+        if(!sameOrigin(req)) return sendJson(res,403,{error:"مصدر غير موثوق"});
+        if(!isAdmin(req)) return sendJson(res,403,{error:"صلاحية أدمن مطلوبة"});
+        const raw=await readBody(req); let body={};
+        try{ body=raw?JSON.parse(raw):{}; }catch(e){ return sendJson(res,400,{error:"طلب غير صالح"}); }
+        const section = sanitizeText(body.section,40);
+        if(!["actions","approvals","changes","meetings","zones","fieldEvidence"].includes(section)) return sendJson(res,400,{error:"قسم غير مدعوم"});
+        const management=loadManagementStore();
+        const item=normalizeManagementItem(section, body.item||{});
+        management[section]=Array.isArray(management[section])?management[section]:[];
+        management[section].push(item);
+        saveManagementStore(management);
+        addAudit(req, "إضافة عنصر إدارة", section, {id:item.id, title:item.title || item.zone || item.date});
+        return sendJson(res,201,{ok:true,item,management:loadManagementStore()});
+      }
+      return sendJson(res,405,{error:"الطريقة غير مسموحة"});
+    }
+
+
+    // معلومات الجلسة والصلاحيات الحالية
+    if(req.method==="GET" && url==="/api/me"){
+      if(REQUIRE_LOGIN && !isAuthed(req)) return sendJson(res,401,{error:"يلزم تسجيل الدخول"});
+      return sendJson(res,200,{ok:true, user:sessionInfo(req), tracks:TRACK_CONFIG.map(t=>({id:t.id,name:t.name,lead:t.lead}))});
+    }
+
+    // سجل التدقيق: قراءة للأدمن فقط
+    if(req.method==="GET" && url==="/api/audit-log"){
+      if(!isAdmin(req)) return sendJson(res,403,{error:"صلاحية أدمن مطلوبة"});
+      return sendJson(res,200,{ok:true, events:loadAuditLog().slice(-300).reverse()});
+    }
+
+    // تحديث حالة مهمة قابلة للإغلاق مع ملاحظة ودليل
+    if(url==="/api/action-update" && req.method==="POST"){
+      if(!sameOrigin(req)) return sendJson(res,403,{error:"مصدر غير موثوق"});
+      if(!canWrite(req)) return sendJson(res,403,{error:"صلاحية تعديل مطلوبة"});
+      let body={}; const raw=await readBody(req);
+      try{ body=raw?JSON.parse(raw):{}; }catch(e){ return sendJson(res,400,{error:"طلب غير صالح"}); }
+      const management=loadManagementStore();
+      const item=updateItemById(management.actions, body.id, {
+        status:sanitizeText(body.status||"قيد العمل",50),
+        closureNote:sanitizeText(body.closureNote||"",500),
+        evidenceUrl:sanitizeText(body.evidenceUrl||"",500)
+      });
+      if(!item) return sendJson(res,404,{error:"المهمة غير موجودة"});
+      if(!itemBelongsToUser(req,item)) return sendJson(res,403,{error:"لا تملك صلاحية تحديث هذا المسار"});
+      saveManagementStore(management);
+      addAudit(req, "تحديث مهمة", "actions", {id:item.id, status:item.status, evidenceUrl:item.evidenceUrl});
+      return sendJson(res,200,{ok:true,item,management:loadManagementStore()});
+    }
+
+    // تحديث اعتماد
+    if(url==="/api/approval-update" && req.method==="POST"){
+      if(!sameOrigin(req)) return sendJson(res,403,{error:"مصدر غير موثوق"});
+      if(!canWrite(req)) return sendJson(res,403,{error:"صلاحية تعديل مطلوبة"});
+      let body={}; const raw=await readBody(req);
+      try{ body=raw?JSON.parse(raw):{}; }catch(e){ return sendJson(res,400,{error:"طلب غير صالح"}); }
+      const management=loadManagementStore();
+      const item=updateItemById(management.approvals, body.id, {status:sanitizeText(body.status||"قيد الاعتماد",50), note:sanitizeText(body.note||"",500)});
+      if(!item) return sendJson(res,404,{error:"الاعتماد غير موجود"});
+      if(!itemBelongsToUser(req,item)) return sendJson(res,403,{error:"لا تملك صلاحية تحديث هذا الاعتماد"});
+      saveManagementStore(management); addAudit(req, "تحديث اعتماد", "approvals", {id:item.id, status:item.status});
+      return sendJson(res,200,{ok:true,item,management:loadManagementStore()});
+    }
+
+    // إشعارات حيّة منذ وقت محدد للمزامنة السريعة داخل الواجهة
+    if(req.method==="GET" && url==="/api/live-notifications"){
+      if(REQUIRE_LOGIN && !isAuthed(req)) return sendJson(res,401,{error:"يلزم تسجيل الدخول"});
+      const since = new URL(req.url, `http://${req.headers.host}`).searchParams.get("since") || "";
+      const sinceTime = since ? Date.parse(since) : 0;
+      const notifications = filterNotificationsForUser(req, loadNotificationsStore()).filter(n=>Date.parse(n.createdAt||0)>sinceTime).slice(-50);
+      return sendJson(res,200,{ok:true, at:new Date().toISOString(), notifications});
+    }
+
+    // جودة البيانات: متاحة للمستخدم حسب نطاق صلاحياته
+    if(req.method==="GET" && url==="/api/data-quality"){
+      if(REQUIRE_LOGIN && !isAuthed(req)) return sendJson(res,401,{error:"يلزم تسجيل الدخول"});
+      return sendJson(res,200,computeDataQuality(req));
+    }
+
+    // ملخص تشغيلي جاهز للعرض حسب صلاحيات المستخدم
+    if(req.method==="GET" && url==="/api/operational-summary"){
+      if(REQUIRE_LOGIN && !isAuthed(req)) return sendJson(res,401,{error:"يلزم تسجيل الدخول"});
+      return sendJson(res,200,computeOperationalSummary(req));
+    }
+
+    // مركز جاهزية النشر والتشغيل — للأدمن فقط
+    if(req.method==="GET" && url==="/api/deployment-readiness"){
+      if(!isAdmin(req)) return sendJson(res,403,{error:"صلاحية أدمن مطلوبة"});
+      return sendJson(res,200,computeDeploymentReadiness());
+    }
+
+    // مركز الإطلاق التشغيلي — للأدمن فقط
+    if(req.method==="GET" && url==="/api/go-live-control"){
+      if(!isAdmin(req)) return sendJson(res,403,{error:"صلاحية أدمن مطلوبة"});
+      return sendJson(res,200,computeGoLiveControl(req));
+    }
+
+    // نسخة احتياطية تشغيلية — للأدمن فقط
+    if(req.method==="GET" && url==="/api/backup"){
+      if(!isAdmin(req)) return sendJson(res,403,{error:"صلاحية أدمن مطلوبة"});
+      addAudit(req, "تنزيل نسخة احتياطية", "backup", {version:"1000.5.0"});
+      const json=JSON.stringify(makeBackupPayload(req), null, 2);
+      return sendText(res,200,json,"application/json; charset=utf-8", {"Content-Disposition":"attachment; filename=KAG_operational_backup.json"});
+    }
+
+    // تصدير المهام والاعتمادات وسجل التدقيق — للأدمن فقط
+    if(req.method==="GET" && url==="/api/export/actions.csv"){
+      if(!isAdmin(req)) return sendJson(res,403,{error:"صلاحية أدمن مطلوبة"});
+      const rows=(loadManagementStore().actions||[]);
+      const csv=toCsv(rows,[{key:"id",label:"المعرف"},{key:"title",label:"المهمة"},{key:"track",label:"المسار"},{key:"owner",label:"المالك"},{key:"priority",label:"الأهمية"},{key:"due",label:"الموعد"},{key:"status",label:"الحالة"},{key:"evidenceUrl",label:"رابط الدليل"},{key:"closureNote",label:"ملاحظة الإغلاق"}]);
+      addAudit(req, "تصدير المهام", "export", {rows:rows.length});
+      return sendText(res,200,csv,"text/csv; charset=utf-8", {"Content-Disposition":"attachment; filename=KAG_actions.csv"});
+    }
+    if(req.method==="GET" && url==="/api/export/approvals.csv"){
+      if(!isAdmin(req)) return sendJson(res,403,{error:"صلاحية أدمن مطلوبة"});
+      const rows=(loadManagementStore().approvals||[]);
+      const csv=toCsv(rows,[{key:"id",label:"المعرف"},{key:"title",label:"الاعتماد"},{key:"type",label:"النوع"},{key:"track",label:"المسار"},{key:"owner",label:"المالك"},{key:"due",label:"الموعد"},{key:"impact",label:"الأثر"},{key:"status",label:"الحالة"},{key:"note",label:"ملاحظة"}]);
+      addAudit(req, "تصدير الاعتمادات", "export", {rows:rows.length});
+      return sendText(res,200,csv,"text/csv; charset=utf-8", {"Content-Disposition":"attachment; filename=KAG_approvals.csv"});
+    }
+    if(req.method==="GET" && url==="/api/export/audit.csv"){
+      if(!isAdmin(req)) return sendJson(res,403,{error:"صلاحية أدمن مطلوبة"});
+      const rows=loadAuditLog().slice(-1000).reverse();
+      const csv=toCsv(rows,[{key:"at",label:"الوقت"},{key:"role",label:"الدور"},{key:"action",label:"الإجراء"},{key:"entity",label:"الكيان"},{key:"ip",label:"IP"},{label:"التفاصيل", value:r=>JSON.stringify(r.details||{})}]);
+      return sendText(res,200,csv,"text/csv; charset=utf-8", {"Content-Disposition":"attachment; filename=KAG_audit_log.csv"});
+    }
+
+    // اختبار جاهزية التكاملات دون إرسال فعلي — للأدمن فقط
+    if(req.method==="POST" && url==="/api/integrations-test"){
+      if(!sameOrigin(req)) return sendJson(res,403,{error:"مصدر غير موثوق"});
+      if(!isAdmin(req)) return sendJson(res,403,{error:"صلاحية أدمن مطلوبة"});
+      const result={ok:true, generatedAt:new Date().toISOString(), emailWebhookConfigured:!!EMAIL_WEBHOOK_URL, whatsappWebhookConfigured:!!WHATSAPP_WEBHOOK_URL, notificationWebhookConfigured:!!NOTIFICATION_WEBHOOK_URL, trackContactsConfigured:Object.keys(TRACK_CONTACTS||{}).length, note:"هذا اختبار إعدادات فقط ولا يرسل رسائل فعلية."};
+      addAudit(req, "اختبار جاهزية التكاملات", "integrations", result);
+      return sendJson(res,200,result);
     }
 
     // حالة مصدر البيانات (تفاصيل حساسة) — للأدمن فقط
     if(url==="/api/config"){
       if(req.method!=="GET") return sendJson(res,405,{error:"الطريقة غير مسموحة"});
-      if(!isAdmin(req)) return sendJson(res,403,{error:"تتطلب صلاحية أدمن"});
+      if(!isAdmin(req)) return sendJson(res,403,{error:"صلاحية أدمن مطلوبة"});
       return sendJson(res,200,{
         sheetConfigured:!!SHEET_ID,
         sheetName:SHEET_NAME||"(أول تبويب)",
@@ -615,7 +1121,7 @@ const server=http.createServer(async (req,res)=>{
     if(url==="/api/refresh"){
       if(req.method!=="POST") return sendJson(res,405,{error:"الطريقة غير مسموحة"});
       if(!sameOrigin(req)) return sendJson(res,403,{error:"مصدر غير موثوق"});
-      if(!isAdmin(req)) return sendJson(res,403,{error:"تتطلب صلاحية أدمن"});
+      if(!isAdmin(req)) return sendJson(res,403,{error:"صلاحية أدمن مطلوبة"});
       const nowMs=Date.now();
       if(nowMs-lastForcedRefresh<3000) return sendJson(res,429,{ok:false,error:"الرجاء الانتظار قليلًا"});
       lastForcedRefresh=nowMs;
@@ -634,14 +1140,16 @@ const server=http.createServer(async (req,res)=>{
       try{ body=raw?JSON.parse(raw):{}; }catch(e){ return sendJson(res,400,{ok:false,error:"طلب غير صالح"}); }
       const adminMatch = safeEqual(body.username||"",ADMIN_USERNAME) & safeEqual(body.password||"",ADMIN_PASSWORD);
       const viewerMatch = safeEqual(body.username||"",VIEWER_USERNAME) & safeEqual(body.password||"",VIEWER_PASSWORD);
-      if(adminMatch || viewerMatch){
+      const trackUser = ROLE_USERS.find(u => safeEqual(body.username||"",u.username) & safeEqual(body.password||"",u.password));
+      if(adminMatch || viewerMatch || trackUser){
         clearLoginFails(ip);
-        const role = adminMatch ? "admin" : "viewer";
-        const tok = signSession(role);
-        audit(role==="admin"?ADMIN_USERNAME:VIEWER_USERNAME, "تسجيل دخول", "الدور: "+role);
+        const sid=crypto.randomBytes(32).toString("hex");
+        const session = trackUser ? {exp:Date.now()+SESSION_TTL_MS, role:"track-manager", username:trackUser.username, name:trackUser.name, trackId:trackUser.trackId, permissions:trackUser.permissions}
+                                  : {exp:Date.now()+SESSION_TTL_MS, role:adminMatch ? "admin" : "viewer", username:adminMatch?ADMIN_USERNAME:VIEWER_USERNAME, name:adminMatch?"مدير النظام":"مشاهد"};
+        sessions.set(sid,session);
         res.writeHead(200,{"Content-Type":"application/json; charset=utf-8","Cache-Control":"no-store",
-          "Set-Cookie":sessionCookie(req,tok,false)});
-        return res.end(JSON.stringify({ok:true, role}));
+          "Set-Cookie":sessionCookie(req,sid,false)});
+        return res.end(JSON.stringify({ok:true, role:session.role, trackId:session.trackId||""}));
       }
       recordLoginFail(ip);
       return sendJson(res,401,{ok:false,error:"بيانات الدخول غير صحيحة"});
@@ -658,10 +1166,17 @@ const server=http.createServer(async (req,res)=>{
       const ok = safeEqual(body.username||"",ADMIN_USERNAME) & safeEqual(body.password||"",ADMIN_PASSWORD);
       if(ok){
         clearLoginFails(ip);
-        const tok = signSession("admin");
-        audit(ADMIN_USERNAME, "ترقية إلى أدمن", "");
+        // ارفع دور الجلسة الحالية إلى admin إن وُجدت، وإلا أنشئ جلسة جديدة
+        const existingSid=getCookie(req,"kag_session");
+        if(existingSid && sessions.has(existingSid)){
+          const s=sessions.get(existingSid); s.role="admin"; s.exp=Date.now()+SESSION_TTL_MS;
+          sessions.set(existingSid,s);
+          return res.end(JSON.stringify({ok:true,role:"admin"}));
+        }
+        const sid=crypto.randomBytes(32).toString("hex");
+        sessions.set(sid,{exp:Date.now()+SESSION_TTL_MS, role:"admin"});
         res.writeHead(200,{"Content-Type":"application/json; charset=utf-8","Cache-Control":"no-store",
-          "Set-Cookie":sessionCookie(req,tok,false)});
+          "Set-Cookie":sessionCookie(req,sid,false)});
         return res.end(JSON.stringify({ok:true,role:"admin"}));
       }
       recordLoginFail(ip);
@@ -670,6 +1185,7 @@ const server=http.createServer(async (req,res)=>{
     if(url==="/api/logout"){
       if(req.method!=="POST") return sendJson(res,405,{error:"الطريقة غير مسموحة"});
       if(!sameOrigin(req)) return sendJson(res,403,{ok:false,error:"مصدر غير موثوق"});
+      const sid=getCookie(req,"kag_session"); if(sid) sessions.delete(sid);
       res.writeHead(200,{"Content-Type":"application/json; charset=utf-8","Cache-Control":"no-store",
         "Set-Cookie":sessionCookie(req,"",true)});
       return res.end(JSON.stringify({ok:true}));
@@ -677,105 +1193,46 @@ const server=http.createServer(async (req,res)=>{
     if(req.method==="GET" && url==="/api/admin-check")
       return sendJson(res,200,{authed:isAuthed(req), isAdmin:isAdmin(req)});
 
-    // ===== العناصر المُدخلة يدويًا من اللوحة (إضافة/حذف/عرض) =====
-    if(url==="/api/items"){
-      if(req.method==="GET"){
-        if(!isAuthed(req)) return sendJson(res,401,{error:"يلزم تسجيل الدخول"});
-        return sendJson(res,200,{items:overrides});
-      }
-      if(req.method==="POST"){
-        if(!sameOrigin(req)) return sendJson(res,403,{error:"مصدر غير موثوق"});
-        if(!isAdmin(req)) return sendJson(res,403,{error:"تتطلب صلاحية أدمن"});
-        let body={}; const raw=await readBody(req);
-        try{ body=raw?JSON.parse(raw):{}; }catch(e){ return sendJson(res,400,{error:"طلب غير صالح"}); }
-        const track=normalizeTrack(body.track);
-        if(!VALID_TRACKS.includes(track) || !String(body.title||"").trim())
-          return sendJson(res,400,{error:"المسار أو العنوان غير صالح"});
-        const item={ id:crypto.randomBytes(8).toString("hex"),
-          track, type:normalizeType(body.type), title:clean(body.title,220),
-          owner:clean(body.owner,120), status:clean(body.status||"قيد التنفيذ",60),
-          due:clean(body.due,40), createdAt:new Date().toISOString() };
-        overrides.push(item); saveOverrides();
-        audit(ADMIN_USERNAME, "إضافة عنصر", `[${track}] ${item.title}`);
-        rebuildLiveState();
-        return sendJson(res,200,{ok:true,item,version:liveVersion});
-      }
-      return sendJson(res,405,{error:"الطريقة غير مسموحة"});
-    }
-    if(url==="/api/items/delete" && req.method==="POST"){
-      if(!sameOrigin(req)) return sendJson(res,403,{error:"مصدر غير موثوق"});
-      if(!isAdmin(req)) return sendJson(res,403,{error:"تتطلب صلاحية أدمن"});
-      let body={}; const raw=await readBody(req);
-      try{ body=raw?JSON.parse(raw):{}; }catch(e){ return sendJson(res,400,{error:"طلب غير صالح"}); }
-      const id=String(body.id||""); const before=overrides.length;
-      const removed=overrides.find(o=>o.id===id);
-      overrides=overrides.filter(o=>o.id!==id);
-      if(overrides.length!==before){ saveOverrides(); audit(ADMIN_USERNAME,"حذف عنصر",removed?`[${removed.track}] ${removed.title}`:id); rebuildLiveState(); }
-      return sendJson(res,200,{ok:true,version:liveVersion});
-    }
-
-    // ===== مركز الإشعارات ومراكز التشغيل المتقدمة =====
-    if(req.method==="GET" && url==="/api/management-center"){
-      if(REQUIRE_LOGIN && !isAuthed(req)) return sendJson(res,401,{error:"يلزم تسجيل الدخول"});
-      ensureManagementBuckets();
-      return sendJson(res,200,{ok:true,data:managementCenter});
-    }
-    if(req.method==="POST" && url==="/api/management-center"){
-      if(!sameOrigin(req)) return sendJson(res,403,{error:"مصدر غير موثوق"});
-      if(!isAdmin(req)) return sendJson(res,403,{error:"تتطلب صلاحية أدمن"});
-      let body={}; const raw=await readBody(req);
-      try{ body=raw?JSON.parse(raw):{}; }catch(e){ return sendJson(res,400,{error:"طلب غير صالح"}); }
-      const bucket=String(body.bucket||"actions");
-      ensureManagementBuckets();
-      if(!Object.prototype.hasOwnProperty.call(managementCenter,bucket)) return sendJson(res,400,{error:"نوع المركز غير صالح"});
-      const item=cleanManagementPayload(body);
-      managementCenter[bucket].unshift(item);
-      if(managementCenter[bucket].length>300) managementCenter[bucket]=managementCenter[bucket].slice(0,300);
-      saveManagementCenter(); audit(ADMIN_USERNAME,"إضافة في مركز التشغيل",`${bucket}: ${item.title||item.message}`);
-      return sendJson(res,200,{ok:true,item,data:managementCenter});
-    }
-    if(req.method==="GET" && url==="/api/notifications"){
-      if(REQUIRE_LOGIN && !isAuthed(req)) return sendJson(res,401,{error:"يلزم تسجيل الدخول"});
-      ensureManagementBuckets();
-      return sendJson(res,200,{ok:true,notifications:managementCenter.notifications});
-    }
-    if(req.method==="POST" && url==="/api/notifications"){
-      if(!sameOrigin(req)) return sendJson(res,403,{error:"مصدر غير موثوق"});
-      if(!isAdmin(req)) return sendJson(res,403,{error:"تتطلب صلاحية أدمن"});
-      let body={}; const raw=await readBody(req);
-      try{ body=raw?JSON.parse(raw):{}; }catch(e){ return sendJson(res,400,{error:"طلب غير صالح"}); }
-      const notification=cleanManagementPayload(body);
-      ensureManagementBuckets();
-      managementCenter.notifications.unshift(notification);
-      if(managementCenter.notifications.length>500) managementCenter.notifications=managementCenter.notifications.slice(0,500);
-      saveManagementCenter(); audit(ADMIN_USERNAME,"إرسال إشعار",`${notification.recipients}: ${notification.message}`);
-      return sendJson(res,200,{ok:true,notification,notifications:managementCenter.notifications});
-    }
+    // ===== تشخيص النظام ومحرك التقارير =====
     if(req.method==="GET" && url==="/api/system-health"){
-      if(REQUIRE_LOGIN && !isAuthed(req)) return sendJson(res,401,{error:"يلزم تسجيل الدخول"});
-      ensureManagementBuckets();
-      return sendJson(res,200,{ok:true,health:{
-        server:true,
-        sync:lastSync,
-        version:liveVersion,
-        updatedAt:liveUpdatedAt,
-        rows:lastSync.rows||0,
-        notifications:managementCenter.notifications.length,
-        audit:auditLog.length,
-        reportEngine:fs.existsSync(path.join(__dirname,"generate_report.py")),
-        dataDir:DATA_DIR
-      }});
-    }
-
-    // ===== سجل التدقيق (مَن غيّر ماذا ومتى) — للأدمن فقط =====
-    if(req.method==="GET" && url==="/api/audit"){
-      if(!isAdmin(req)) return sendJson(res,403,{error:"تتطلب صلاحية أدمن"});
-      return sendJson(res,200,{audit:auditLog.slice(0,100)});
+      if(!isAdmin(req)) return sendJson(res,403,{error:"صلاحية أدمن مطلوبة"});
+      const reportScript = path.join(__dirname,"generate_report.py");
+      const templatesDir = path.join(__dirname,"templates");
+      const reportEngineDir = path.join(__dirname,"report_engine");
+      return sendJson(res,200,{
+        ok:true,
+        time:new Date().toISOString(),
+        node:process.version,
+        loginRequired:REQUIRE_LOGIN,
+        dataSource:lastSync,
+        liveVersion,
+        stateLoaded:!!liveState,
+        tracks:VALID_TRACKS,
+        roleUsersConfigured:ROLE_USERS.length,
+        report:{
+          generateReportPy:fs.existsSync(reportScript),
+          templatesDir:fs.existsSync(templatesDir),
+          reportEngineDir:fs.existsSync(reportEngineDir)
+        },
+        notifications:{
+          store:fs.existsSync(NOTIFICATION_STORE),
+          count:loadNotificationsStore().length,
+          webhookConfigured:!!NOTIFICATION_WEBHOOK_URL,
+          emailWebhookConfigured:!!EMAIL_WEBHOOK_URL,
+          whatsappWebhookConfigured:!!WHATSAPP_WEBHOOK_URL,
+          trackContactsConfigured:Object.keys(TRACK_CONTACTS||{}).length
+        },
+        security:{
+          fixedPasswordsInCode:false,
+          sameOrigin:"strict-host",
+          sensitiveApis:"admin-only"
+        }
+      });
     }
 
     // ===== توليد التقارير (Python) =====
     if(url.startsWith("/api/report") && req.method==="POST"){
-      if(!isAdmin(req)) return sendJson(res,403,{error:"تتطلب صلاحية أدمن"});
+      if(!isAdmin(req)) return sendJson(res,403,{error:"صلاحية أدمن مطلوبة"});
       let body={};
       const raw=await readBody(req);
       try{ body=raw?JSON.parse(raw):{}; }catch(e){ return sendJson(res,400,{error:"طلب غير صالح"}); }
@@ -830,18 +1287,14 @@ server.headersTimeout = 15000;
 server.keepAliveTimeout = 8000;
 
 (async ()=>{
-  ensureDataDir();
   await refreshFromSheet();
   setInterval(refreshFromSheet, SHEET_REFRESH_MS);
   server.listen(PORT,()=>{
     console.log(`KAG Operational Analytics Platform يعمل على http://localhost:${PORT}`);
     console.log(`مصدر البيانات: ${SHEET_ID?("Google Sheet ["+SHEET_ID+"]"):"بيانات تجريبية (لم يُضبط SHEET_ID)"}`);
-    console.log(`اسم مستخدم الأدمن: ${ADMIN_USERNAME}  |  اسم مستخدم المشاهد: ${VIEWER_USERNAME}`);
-    console.log(`العناصر المُدخلة يدويًا: ${overrides.length}  |  سجل التدقيق: ${auditLog.length} مدخل`);
-    if(_genAdminPw)  console.log(`⚠️  لم تُضبط ADMIN_PASSWORD — كلمة مرور أدمن مؤقتة: ${ADMIN_PASSWORD}`);
-    if(_genViewerPw) console.log(`⚠️  لم تُضبط VIEWER_PASSWORD — كلمة مرور مشاهد مؤقتة: ${VIEWER_PASSWORD}`);
-    if(_genSessionSecret) console.log("⚠️  لم يُضبط SESSION_SECRET — ستنتهي الجلسات عند كل إعادة نشر. اضبطه في البيئة لجلسات ثابتة.");
-    if(!_genAdminPw && !_genViewerPw && !_genSessionSecret) console.log("✓ جميع الأسرار مضبوطة من متغيّرات البيئة.");
+    console.log(`اسم مستخدم الأدمن: ${ADMIN_USERNAME}`);
+    if(!process.env.ADMIN_PASSWORD) console.log(`كلمة مرور الأدمن المؤقتة لهذا التشغيل: ${ADMIN_PASSWORD}  (يفضل ضبط ADMIN_PASSWORD في متغيرات البيئة)`);
+    if(!process.env.VIEWER_PASSWORD) console.log(`كلمة مرور المشاهد المؤقتة لهذا التشغيل: ${VIEWER_PASSWORD}  (يفضل ضبط VIEWER_PASSWORD في متغيرات البيئة)`);
     if(REQUIRE_LOGIN) console.log("الوضع: قفل كامل (REQUIRE_LOGIN=true) — لا تُعرض البيانات إلا بعد تسجيل الدخول.");
   });
 })();
