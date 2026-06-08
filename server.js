@@ -897,6 +897,356 @@ f.addEventListener('submit',function(ev){
   res.writeHead(200,{"Content-Type":"text/html; charset=utf-8","Cache-Control":"no-store"});
   res.end(html);
 }
+// ═══════════════════════════════════════════════════════════════
+// محرك توليد PPTX — pptxgenjs (Node.js) — لا يحتاج Python
+// ═══════════════════════════════════════════════════════════════
+async function generatePptxReport(PptxGenJS, reportType, state){
+  const prs  = new PptxGenJS();
+  prs.layout = "LAYOUT_WIDE"; // 13.33 × 7.5 inches
+  prs.rtlMode = false; // pptxgenjs لا يدعم RTL كاملاً — نستخدم align right
+
+  // ── ألوان الهوية ──
+  const C = {
+    bg:     "0D1B2A",
+    gold:   "D4A843",
+    white:  "EAF0F7",
+    muted:  "7A9BB5",
+    green:  "27AE60",
+    red:    "E74C3C",
+    amber:  "F39C12",
+    blue:   "2F8CFF",
+    line:   "1E3A5F",
+    rowA:   "0F2035",
+    rowB:   "162A3D",
+    header: "0A1628",
+  };
+
+  const tracks = (state.tracks || []);
+  const items  = (state.items  || []);
+  const today  = new Date().toISOString().slice(0,10);
+  const weekNum= Math.ceil((new Date() - new Date(new Date().getFullYear(),0,1)) / 604800000);
+
+  const isDone   = i => /مكتملة|مكتمل|معتمدة|معتمد|Completed/i.test(i.status||"");
+  const isActive = i => /قيد|تحت|نشط/i.test(i.status||"");
+  const isRisk   = i => /خطر|معرض|متأخر|حرج/i.test(i.status||"") || i.type==="risks";
+  const fmtDate  = d => { try{ return d?new Date(d).toLocaleDateString("ar-SA"):"—"; }catch{ return d||"—"; } };
+  const overall  = tracks.length ? Math.round(tracks.reduce((a,t)=>a+(t.progress||0),0)/tracks.length) : 0;
+  const risks    = items.filter(isRisk);
+  const critical = risks.filter(r=>/خطر|حرج|معرضة/i.test(r.status||""));
+  const doneItems= items.filter(isDone);
+  const activeItems = items.filter(isActive);
+
+  // ── دوال مساعدة لبناء الشرائح ──
+  function addBgRect(slide){
+    slide.addShape(prs.ShapeType.rect,{x:0,y:0,w:"100%",h:"100%",fill:{color:C.bg}});
+  }
+
+  function addTitle(slide, text, sub=""){
+    // شريط ذهبي علوي
+    slide.addShape(prs.ShapeType.rect,{x:0,y:0,w:"100%",h:0.08,fill:{color:C.gold}});
+    slide.addText(text,{x:0.4,y:0.18,w:12.5,h:0.65,
+      fontSize:28, bold:true, color:C.gold,
+      fontFace:"Arial", align:"right", valign:"middle"});
+    if(sub) slide.addText(sub,{x:0.4,y:0.82,w:12.5,h:0.35,
+      fontSize:13, color:C.muted, fontFace:"Arial", align:"right"});
+    // خط فاصل
+    slide.addShape(prs.ShapeType.line,{x:0.4,y:1.22,w:12.5,h:0,
+      line:{color:C.line, width:1}});
+  }
+
+  function addKpiRow(slide, kpis, top=1.4){
+    // كل kpi = {label, value, color}
+    const w = 13.33 / kpis.length;
+    kpis.forEach((k,i)=>{
+      const x = i * w;
+      slide.addShape(prs.ShapeType.rect,{x:x+0.05,y:top,w:w-0.1,h:0.85,
+        fill:{color:C.rowA}, line:{color:C.line,width:1}});
+      slide.addText(k.value,{x:x+0.1,y:top+0.04,w:w-0.2,h:0.45,
+        fontSize:22, bold:true, color:k.color||C.blue,
+        fontFace:"Arial", align:"center", valign:"middle"});
+      slide.addText(k.label,{x:x+0.1,y:top+0.5,w:w-0.2,h:0.28,
+        fontSize:10, color:C.muted, fontFace:"Arial", align:"center"});
+    });
+  }
+
+  function addTable(slide, headers, rows, top, opts={}){
+    const colW = opts.colW || null;
+    const nCol = headers.length;
+    const autoW = (13.33 - 0.8) / nCol;
+    const widths = colW || headers.map(()=>autoW);
+
+    // رأس الجدول
+    let x = 0.4;
+    headers.forEach((h,i)=>{
+      slide.addShape(prs.ShapeType.rect,{x,y:top,w:widths[i],h:0.32,
+        fill:{color:C.gold}, line:{color:C.gold,width:0}});
+      slide.addText(h,{x:x+0.04,y:top,w:widths[i]-0.08,h:0.32,
+        fontSize:10, bold:true, color:C.header,
+        fontFace:"Arial", align:"center", valign:"middle"});
+      x += widths[i];
+    });
+
+    // صفوف البيانات
+    if(!rows.length) rows = [headers.map(()=>"لا توجد بيانات")];
+    rows.slice(0,opts.maxRows||12).forEach((row,ri)=>{
+      const bg = ri%2===0 ? C.rowA : C.rowB;
+      let cx = 0.4;
+      row.forEach((cell,ci)=>{
+        slide.addShape(prs.ShapeType.rect,{x:cx,y:top+0.32+ri*0.30,w:widths[ci],h:0.30,
+          fill:{color:bg}, line:{color:C.line,width:0.5}});
+        slide.addText(String(cell||"—").slice(0,50),{
+          x:cx+0.04, y:top+0.32+ri*0.30, w:widths[ci]-0.08, h:0.30,
+          fontSize:9, color:C.white, fontFace:"Arial",
+          align:"right", valign:"middle"});
+        cx += widths[ci];
+      });
+    });
+  }
+
+  function addSectionLabel(slide, text, top){
+    slide.addShape(prs.ShapeType.rect,{x:0.4,y:top,w:12.53,h:0.28,
+      fill:{color:C.rowA}, line:{color:C.line,width:1}});
+    slide.addText(text,{x:0.5,y:top,w:12.33,h:0.28,
+      fontSize:11, bold:true, color:C.gold,
+      fontFace:"Arial", align:"right", valign:"middle"});
+  }
+
+  function addFooter(slide){
+    slide.addShape(prs.ShapeType.rect,{x:0,y:7.28,w:"100%",h:0.22,fill:{color:C.header}});
+    slide.addText(`حدائق الملك عبدالله 2026  |  ${today}  |  سري — للاستخدام الداخلي`,
+      {x:0.4,y:7.28,w:12.5,h:0.22,fontSize:8,color:C.muted,fontFace:"Arial",align:"center"});
+  }
+
+  // ═══════════════════════════════════════
+  // ── شريحة الغلاف (مشتركة) ──
+  // ═══════════════════════════════════════
+  function addCoverSlide(titleText, subtitle){
+    const s = prs.addSlide();
+    addBgRect(s);
+    // مستطيل ذهبي جانبي
+    s.addShape(prs.ShapeType.rect,{x:0,y:0,w:0.12,h:"100%",fill:{color:C.gold}});
+    s.addShape(prs.ShapeType.rect,{x:0,y:2.8,w:"100%",h:0.06,fill:{color:C.line}});
+    s.addText("حدائق الملك عبدالله",{x:0.5,y:1.2,w:12.3,h:0.8,
+      fontSize:36, bold:true, color:C.gold, fontFace:"Arial", align:"right"});
+    s.addText("King Abdullah Gardens",{x:0.5,y:2.0,w:12.3,h:0.5,
+      fontSize:18, color:C.muted, fontFace:"Arial", align:"right"});
+    s.addText(titleText,{x:0.5,y:3.0,w:12.3,h:0.7,
+      fontSize:26, bold:true, color:C.white, fontFace:"Arial", align:"right"});
+    s.addText(subtitle||"",{x:0.5,y:3.75,w:12.3,h:0.45,
+      fontSize:14, color:C.muted, fontFace:"Arial", align:"right"});
+    s.addText(`التاريخ: ${today}  |  الأسبوع: ${weekNum}  |  الإنجاز العام: ${overall}%`,
+      {x:0.5,y:6.6,w:12.3,h:0.4,fontSize:12,color:C.gold,fontFace:"Arial",align:"right"});
+    addFooter(s);
+  }
+
+  // ═══════════════════════════════════════
+  // ── شريحة ملخص المؤشرات ──
+  // ═══════════════════════════════════════
+  function addSummarySlide(){
+    const s = prs.addSlide();
+    addBgRect(s);
+    addTitle(s,"ملخص المؤشرات التنفيذية", `الإنجاز العام: ${overall}%  |  المسارات: ${tracks.length}  |  العناصر: ${items.length}`);
+    addKpiRow(s,[
+      {label:"الإنجاز العام",  value:overall+"%",         color: overall>=70?C.green:overall>=45?C.amber:C.red},
+      {label:"المهام المنجزة", value:String(doneItems.length),  color:C.green},
+      {label:"قيد التنفيذ",    value:String(activeItems.length),color:C.amber},
+      {label:"المخاطر الكلية", value:String(risks.length),      color:C.red},
+      {label:"المخاطر الحرجة", value:String(critical.length),   color:C.red},
+    ], 1.4);
+    // جدول المسارات
+    addSectionLabel(s,"أداء المسارات", 2.45);
+    addTable(s,
+      ["المسار","الاسم","الإنجاز%","المخطط%","المهام","منجز","نشط","مخاطر","الحالة"],
+      tracks.map(t=>[t.id||"",t.name||"",`${t.progress||0}%`,`${t.planned||80}%`,
+        t.tasks||0, t.done||0, t.active||0, t.risk||0, t.status||"—"]),
+      2.77,
+      {colW:[0.5,2.0,0.9,0.9,0.8,0.8,0.8,0.8,1.7],maxRows:8}
+    );
+    addFooter(s);
+  }
+
+  // ═══════════════════════════════════════
+  // ── شريحة المخاطر ──
+  // ═══════════════════════════════════════
+  function addRisksSlide(){
+    const s = prs.addSlide();
+    addBgRect(s);
+    addTitle(s,"المخاطر والقرارات",`مخاطر مفتوحة: ${risks.length}  |  حرجة: ${critical.length}`);
+    addKpiRow(s,[
+      {label:"مخاطر مفتوحة",  value:String(risks.length),    color:C.amber},
+      {label:"حرجة",           value:String(critical.length), color:C.red},
+      {label:"تحت المتابعة",   value:String(risks.filter(r=>/متابعة|قيد/.test(r.status||"")).length), color:C.amber},
+      {label:"مغلقة",          value:String(items.filter(i=>/مغلقة|مغلق/.test(i.status||"")).length),color:C.green},
+    ],1.4);
+    addSectionLabel(s,"سجل المخاطر",2.45);
+    addTable(s,
+      ["المخاطرة","المسار","المالك","الحالة","الموعد","النوع"],
+      risks.length ? risks.map(r=>[r.title||"",r.track||"",r.owner||"—",r.status||"—",fmtDate(r.due),r.type||"مخاطرة"])
+                   : [["لا توجد مخاطر مفتوحة","","","","",""]],
+      2.77,
+      {colW:[3.8,1.5,1.8,1.7,1.4,1.0],maxRows:11}
+    );
+    addFooter(s);
+  }
+
+  // ═══════════════════════════════════════
+  // ── شريحة المهام والإجراءات ──
+  // ═══════════════════════════════════════
+  function addActionsSlide(filterTrack=null){
+    const s = prs.addSlide();
+    addBgRect(s);
+    const filtered = filterTrack
+      ? items.filter(i=>i.track===filterTrack && i.type==="tasks")
+      : items.filter(i=>i.type==="tasks"||!i.type);
+    const pending  = filtered.filter(i=>!isDone(i));
+    const overdue  = pending.filter(i=>i.due && i.due < today);
+    addTitle(s, filterTrack ? `مهام مسار ${filterTrack}` : "المهام والإجراءات",
+      `إجمالي: ${filtered.length}  |  معلق: ${pending.length}  |  متأخر: ${overdue.length}`);
+    addKpiRow(s,[
+      {label:"إجمالي",  value:String(filtered.length),color:C.white},
+      {label:"منجز",    value:String(filtered.filter(isDone).length), color:C.green},
+      {label:"نشط",     value:String(filtered.filter(isActive).length),color:C.amber},
+      {label:"متأخر",   value:String(overdue.length), color:C.red},
+    ],1.4);
+    addSectionLabel(s, filterTrack?"قائمة مهام المسار":"قائمة المهام",2.45);
+    addTable(s,
+      ["المهمة","المسار","المالك","الحالة","الموعد","التقدم%"],
+      filtered.length ? filtered.map(i=>[i.title||"",i.track||"",i.owner||"—",i.status||"—",fmtDate(i.due),`${i.progress||0}%`])
+                      : [["لا توجد مهام","","","","",""]],
+      2.77,
+      {colW:[4.2,1.2,1.8,1.7,1.4,1.0],maxRows:11}
+    );
+    addFooter(s);
+  }
+
+  // ═══════════════════════════════════════
+  // ── شريحة الاعتمادات ──
+  // ═══════════════════════════════════════
+  function addApprovalsSlide(filterTrack=null){
+    const s = prs.addSlide();
+    addBgRect(s);
+    const all = items.filter(i=>i.type==="permits"||(i.type||"").includes("اعتماد")||
+                                (filterTrack ? i.track===filterTrack : false));
+    // إذا ما فيه permits، اعرض items مفتوحة
+    const rows = (all.length ? all : items.filter(i=>!isDone(i) && (filterTrack?i.track===filterTrack:true)))
+      .slice(0,12);
+    const late = rows.filter(r=>r.due && r.due < today && !isDone(r));
+    addTitle(s, "الاعتمادات والتصعيد", `إجمالي: ${rows.length}  |  متأخرة: ${late.length}`);
+    addKpiRow(s,[
+      {label:"إجمالي الاعتمادات", value:String(rows.length),  color:C.white},
+      {label:"متأخرة",             value:String(late.length),  color:C.red},
+      {label:"معتمدة",             value:String(rows.filter(isDone).length), color:C.green},
+      {label:"قيد الاعتماد",       value:String(rows.filter(r=>!isDone(r)&&!late.includes(r)).length),color:C.amber},
+    ],1.4);
+    addSectionLabel(s,"سجل الاعتمادات",2.45);
+    addTable(s,
+      ["الاعتماد","المسار","المالك","الحالة","الموعد","النوع"],
+      rows.length ? rows.map(r=>[r.title||"",r.track||"",r.owner||"—",r.status||"—",fmtDate(r.due),r.type||"—"])
+                  : [["لا توجد اعتمادات بانتظار الإجراء","","","","",""]],
+      2.77,
+      {colW:[3.8,1.5,1.8,1.7,1.4,1.0],maxRows:11}
+    );
+    addFooter(s);
+  }
+
+  // ═══════════════════════════════════════
+  // ── شريحة الأدلة الميدانية ──
+  // ═══════════════════════════════════════
+  function addEvidenceSlide(){
+    const s = prs.addSlide();
+    addBgRect(s);
+    const closed = doneItems.slice(0,12);
+    addTitle(s,"الأدلة الميدانية والإغلاقات",`مهام مغلقة: ${doneItems.length}`);
+    addKpiRow(s,[
+      {label:"مهام مغلقة",   value:String(doneItems.length),  color:C.green},
+      {label:"إجمالي المهام", value:String(items.length),      color:C.white},
+      {label:"نسبة الإغلاق", value:items.length?Math.round(doneItems.length*100/items.length)+"%":"0%", color:C.green},
+      {label:"مخاطر مفتوحة", value:String(risks.length),      color:C.amber},
+    ],1.4);
+    addSectionLabel(s,"المهام المغلقة — أدلة الإغلاق",2.45);
+    addTable(s,
+      ["المهمة","المسار","المالك","الحالة","تاريخ الإغلاق","النوع"],
+      closed.length ? closed.map(i=>[i.title||"",i.track||"",i.owner||"—",i.status||"—",fmtDate(i.due),i.type||"—"])
+                    : [["لا توجد مهام مغلقة حتى الآن","","","","",""]],
+      2.77,
+      {colW:[3.8,1.5,1.8,1.7,1.4,1.0],maxRows:11}
+    );
+    addFooter(s);
+  }
+
+  // ═══════════════════════════════════════
+  // ── شريحة مسار واحد ──
+  // ═══════════════════════════════════════
+  function addTrackSlide(track){
+    const s = prs.addSlide();
+    addBgRect(s);
+    const ti   = items.filter(i=>i.track===track.id||i.track===track.name);
+    const tRisk= ti.filter(isRisk);
+    const tDone= ti.filter(isDone);
+    const tAct = ti.filter(isActive);
+    addTitle(s, `مسار ${track.id||""} — ${track.name||""}`,
+      `الإنجاز: ${track.progress||0}%  |  المهام: ${ti.length}  |  المخاطر: ${tRisk.length}`);
+    addKpiRow(s,[
+      {label:"الإنجاز",  value:`${track.progress||0}%`, color:(track.progress||0)>=70?C.green:(track.progress||0)>=45?C.amber:C.red},
+      {label:"المخطط",   value:`${track.planned||80}%`, color:C.muted},
+      {label:"منجز",     value:String(tDone.length),    color:C.green},
+      {label:"نشط",      value:String(tAct.length),     color:C.amber},
+      {label:"مخاطر",    value:String(tRisk.length),    color:C.red},
+      {label:"الحالة",   value:track.status||"—",       color:C.white},
+    ],1.4);
+    addSectionLabel(s,"مهام المسار",2.45);
+    addTable(s,
+      ["المهمة","المالك","الحالة","الموعد","التقدم%","النوع"],
+      ti.length ? ti.slice(0,11).map(i=>[i.title||"",i.owner||"—",i.status||"—",fmtDate(i.due),`${i.progress||0}%`,i.type||"—"])
+               : [["لا توجد بيانات لهذا المسار","","","","",""]],
+      2.77,
+      {colW:[3.8,1.8,1.7,1.4,0.9,1.6],maxRows:11}
+    );
+    addFooter(s);
+  }
+
+  // ═══════════════════════════════════════
+  // ── بناء التقرير حسب النوع ──
+  // ═══════════════════════════════════════
+  if(reportType === "daily_ops"){
+    addCoverSlide("تقرير غرفة العمليات اليومي", `الأسبوع ${weekNum} — ${today}`);
+    addSummarySlide();
+    addActionsSlide();
+    addRisksSlide();
+  }
+  else if(reportType === "executive"){
+    addCoverSlide("تقرير اللجنة التنفيذية", `الإنجاز العام: ${overall}%`);
+    addSummarySlide();
+    addRisksSlide();
+    addApprovalsSlide();
+  }
+  else if(reportType === "approvals"){
+    addCoverSlide("تقرير الاعتمادات والتصعيد", `متأخرة: ${items.filter(i=>i.due&&i.due<today&&!isDone(i)).length}`);
+    addApprovalsSlide();
+    addRisksSlide();
+  }
+  else if(reportType === "evidence"){
+    addCoverSlide("تقرير الأدلة الميدانية", `مهام مغلقة: ${doneItems.length}`);
+    addEvidenceSlide();
+    addActionsSlide();
+  }
+  else {
+    // comprehensive — جميع المسارات
+    addCoverSlide("التقرير الشامل", `جميع المسارات — ${tracks.length} مسار — ${items.length} عنصر`);
+    addSummarySlide();
+    addRisksSlide();
+    addApprovalsSlide();
+    addEvidenceSlide();
+    addActionsSlide();
+    // شريحة لكل مسار
+    tracks.forEach(t => addTrackSlide(t));
+  }
+
+  const buf = await prs.write({outputType:"nodebuffer"});
+  return buf;
+}
+
+
 const server=http.createServer(async (req,res)=>{
   try{
     securityHeaders(req,res);
@@ -1239,28 +1589,15 @@ const server=http.createServer(async (req,res)=>{
       const reportType = body.type || "comprehensive";
       if(!liveState) return sendJson(res,503,{error:"البيانات غير متاحة بعد"});
       try{
-        const {execFile} = require("child_process");
-        const scriptPath = path.join(__dirname,"generate_report.py");
-        const inputData  = JSON.stringify({type:reportType, state:liveState});
-        const buf = await new Promise((resolve,reject)=>{
-          const chunks=[];
-          const proc = execFile("python3",[scriptPath],{maxBuffer:50*1024*1024},(err,stdout,stderr)=>{
-            if(err){ reject(new Error(stderr||err.message)); return; }
-          });
-          proc.stdin.write(inputData);
-          proc.stdin.end();
-          proc.stdout.on("data",chunk=>chunks.push(Buffer.isBuffer(chunk)?chunk:Buffer.from(chunk)));
-          proc.stdout.on("end",()=>resolve(Buffer.concat(chunks)));
-          proc.stderr.on("data",d=>{}); // تجاهل stderr
-          proc.on("error",reject);
-        });
+        const PptxGenJS = require("pptxgenjs");
+        const buf = await generatePptxReport(PptxGenJS, reportType, liveState);
         const safeNames = {"comprehensive":"Comprehensive","أ":"A","ب":"B","ج":"C","د":"D","daily_ops":"DailyOps","executive":"Executive","approvals":"Approvals","evidence":"Evidence"};
         const safeName  = safeNames[reportType] || "Report";
         const dateStr   = new Date().toISOString().slice(0,10);
         const fname     = `KAGA-Report-${safeName}-${dateStr}.pptx`;
         res.writeHead(200,{
           "Content-Type":"application/vnd.openxmlformats-officedocument.presentationml.presentation",
-          "Content-Disposition":`attachment; filename="${fname}"`,
+          "Content-Disposition":`attachment; filename*=UTF-8''${encodeURIComponent(fname)}`,
           "Content-Length": buf.length,
           "Cache-Control":"no-store"
         });
@@ -1298,3 +1635,4 @@ server.keepAliveTimeout = 8000;
     if(REQUIRE_LOGIN) console.log("الوضع: قفل كامل (REQUIRE_LOGIN=true) — لا تُعرض البيانات إلا بعد تسجيل الدخول.");
   });
 })();
+

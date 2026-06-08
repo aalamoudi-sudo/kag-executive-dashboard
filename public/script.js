@@ -289,15 +289,38 @@
     // ============================================================
     // handler واحد موحّد — يتعامل مع كل نقرات الجسم
     // ============================================================
-    function doGenerateReport(rtype, rname, btnEl){
+    async function doGenerateReport(rtype, rname, btnEl){
       if(btnEl){ btnEl.disabled=true; btnEl.textContent="⏳ جارٍ التجهيز..."; }
+      const dateStr = new Date().toISOString().slice(0,10);
+      const safeName = (rname||rtype).replace(/\s+/g,"-");
       try{
-        const lines = buildAndDownloadCSV(rtype, rname);
-        toast(`✅ ${rname} — تم التنزيل (${lines} سطر بيانات)`);
+        // أولاً: حاول PPTX من السيرفر
+        const res = await fetch("/api/report",{
+          method:"POST", credentials:"include",
+          headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({type:rtype})
+        });
+        if(res.ok){
+          const blob = await res.blob();
+          const url  = URL.createObjectURL(blob);
+          const a    = document.createElement("a");
+          a.href=url; a.download=`KAGA-${safeName}-${dateStr}.pptx`;
+          document.body.appendChild(a); a.click();
+          document.body.removeChild(a); URL.revokeObjectURL(url);
+          toast(`✅ ${rname||rtype} — تم تنزيل PPTX`);
+        } else {
+          // fallback: CSV مباشر من المتصفح
+          const lines = buildAndDownloadCSV(rtype, rname||rtype);
+          toast(`⚠️ تم تنزيل CSV بدلاً من PPTX (${lines} سطر)`);
+        }
       }catch(err){
-        toast(`❌ فشل التوليد: ${err.message}`);
+        // network error fallback
+        try{
+          const lines = buildAndDownloadCSV(rtype, rname||rtype);
+          toast(`⚠️ تم تنزيل CSV (${lines} سطر)`);
+        }catch(e2){ toast(`❌ فشل التوليد: ${err.message}`); }
       }finally{
-        if(btnEl){ setTimeout(()=>{ btnEl.disabled=false; btnEl.textContent="⬇ تجهيز"; }, 400); }
+        if(btnEl){ btnEl.disabled=false; btnEl.textContent="⬇ تجهيز"; }
       }
     }
 
