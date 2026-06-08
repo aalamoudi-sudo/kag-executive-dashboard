@@ -1,0 +1,17 @@
+{
+  "name": "kag-live-command-center-gsheet",
+  "version": "70.0.0",
+  "private": true,
+  "description": "KAG Live Command Center — data sourced live from Google Sheets",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "jsdom": "^29.1.1",
+    "pptxgenjs": "^4.0.1"
+  }
+}
