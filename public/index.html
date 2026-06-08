@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <meta name="theme-color" content="#06111F" />
-  <meta name="kag-ui-version" content="KAG-BUILD-2026-06-09-v7" />
+  <meta name="kag-ui-version" content="KAG-BUILD-2026-06-09-v8-FINAL" />
   <title>حدائق الملك عبدالله 2026 — منصة إدارة ومتابعة المشروع</title>
   <link rel="manifest" href="manifest.webmanifest" />
   <link rel="stylesheet" href="style.css" />
@@ -70,7 +70,6 @@
           <h1>حدائق الملك عبدالله 2026</h1>
           <p>منصة إدارة ومتابعة المشروع</p>
         </div>
-
       </header>
 
       <section class="status-strip glass">
@@ -90,12 +89,10 @@
               <div class="impact-score"><strong id="impactScore">--</strong><span>من 100</span><em id="impactTrend">--</em></div>
             </div>
           </article>
-
           <article class="card span-4">
             <div class="card-head"><h2>مركز القرارات</h2><button data-go="decision-intelligence">عرض الكل</button></div>
             <div class="smart-table" id="decisionPreview"></div>
           </article>
-
           <article class="card span-3">
             <div class="card-head"><h2>إدارة المخاطر والسمعة</h2><button data-go="risk-reputation">عرض الكل</button></div>
             <div class="radar-wrap">
@@ -103,7 +100,6 @@
               <div class="risk-badges"><b id="criticalRiskBadge">-- مخاطر حرجة</b><span id="mediumRiskBadge">-- مخاطر متوسطة</span></div>
             </div>
           </article>
-
           <article class="card span-3">
             <div class="card-head"><h2>تجربة الزائر</h2><button data-go="visitor-experience">عرض الكل</button></div>
             <div class="visitor-widget">
@@ -111,17 +107,14 @@
               <div class="quality-list" id="visitorQuality"></div>
             </div>
           </article>
-
           <article class="card span-4">
             <div class="card-head"><h2>أداء المسارات</h2><button data-go="track-performance">عرض الكل</button></div>
             <div class="track-bars" id="trackBars"></div>
           </article>
-
           <article class="card span-2">
             <div class="card-head"><h2>حالة النظام</h2><button data-go="system-health">فحص</button></div>
             <div class="system-mini" id="systemMini"></div>
           </article>
-
           <article class="card mini-card span-3" data-go="evidence-room"><i>▣</i><strong id="evidenceCount">--</strong><span>دليل موثق في مركز التوثيق والأدلة</span></article>
           <article class="card mini-card span-3" data-go="scenario-simulator"><i>◇</i><strong id="scenarioCount">--</strong><span>سيناريوهات نشطة للمحاكاة</span></article>
           <article class="card mini-card span-3" data-go="reports-center"><i>▥</i><strong id="reportsCount">--</strong><span>تقرير جاهز للتوليد</span></article>
@@ -133,15 +126,12 @@
         <div class="page-title"><h2>مركز القرارات</h2><p>كل فجوة تتحول إلى قرار: مالك، موعد، أثر، وتوصية.</p></div>
         <div class="deep-grid" id="decisionPage"></div>
       </section>
-
       <section class="page" id="operational-summary">
-        <div class="page-title"><h2>ملخص التشغيل</h2><p>قراءة مختصرة لدورة التشغيل: المهام، التصعيد، الاعتمادات، جودة البيانات، والتوصية القادمة.</p></div>
+        <div class="page-title"><h2>ملخص التشغيل</h2><p>قراءة مختصرة لدورة التشغيل.</p></div>
         <div class="deep-grid" id="operationalSummaryPage"></div>
       </section>
-
-
       <section class="page" id="notification-center">
-        <div class="page-title"><h2>مركز الإشعارات</h2><p>إرسال ومتابعة الإشعارات الفردية والجماعية لمديري المسارات حسب الأهمية وموعد التسليم أو التحديث المطلوب.</p></div>
+        <div class="page-title"><h2>مركز الإشعارات</h2><p>إرسال ومتابعة الإشعارات لمديري المسارات.</p></div>
         <div class="notification-layout">
           <article class="deep-card notify-compose">
             <h3>إنشاء إشعار جديد</h3>
@@ -157,7 +147,7 @@
               <label>العنوان</label>
               <input id="notifyTitle" type="text" placeholder="مثال: تحديث خطة السلامة قبل نهاية اليوم" required />
               <label>نص الإشعار</label>
-              <textarea id="notifyMessage" rows="5" placeholder="اكتب المطلوب بوضوح: ما المطلوب؟ من المسؤول؟ متى آخر موعد؟" required></textarea>
+              <textarea id="notifyMessage" rows="5" placeholder="اكتب المطلوب بوضوح" required></textarea>
               <label>قنوات الإرسال</label>
               <div class="channel-options">
                 <label><input type="checkbox" name="notifyChannel" value="inApp" checked disabled /> داخل النظام</label>
@@ -170,8 +160,8 @@
                 <div><label>نوع الإجراء</label><select id="notifyActionType"><option value="تسليم">تسليم مطلوب</option><option value="تحديث">تحديث مطلوب</option><option value="قرار">قرار مطلوب</option><option value="متابعة">متابعة فقط</option></select></div>
                 <div><label>موعد التسليم</label><input id="notifyDueAt" type="datetime-local" /></div>
                 <div><label>موعد التحديث المطلوب</label><input id="notifyUpdateAt" type="datetime-local" /></div>
-                <div><label>إيميلات إضافية اختيارية</label><input id="notifyExtraEmails" type="text" placeholder="name@example.com, name2@example.com" /></div>
-                <div><label>أرقام واتساب إضافية اختيارية</label><input id="notifyExtraWhatsApp" type="text" placeholder="+9665xxxxxxxx, +9665xxxxxxxx" /></div>
+                <div><label>إيميلات إضافية</label><input id="notifyExtraEmails" type="text" placeholder="name@example.com" /></div>
+                <div><label>أرقام واتساب إضافية</label><input id="notifyExtraWhatsApp" type="text" placeholder="+9665xxxxxxxx" /></div>
               </div>
               <button class="customize notify-submit" type="submit">إرسال الإشعار</button>
             </form>
@@ -183,117 +173,94 @@
           </article>
         </div>
       </section>
-
-
       <section class="page" id="action-center">
-        <div class="page-title"><h2>مركز المهام والمتابعة</h2><p>تحويل الإشعارات والمخاطر والقرارات إلى مهام قابلة للإغلاق مع مالك وموعد ودليل.</p></div>
+        <div class="page-title"><h2>مركز المهام والمتابعة</h2><p>تحويل المخاطر والقرارات إلى مهام قابلة للإغلاق.</p></div>
         <div class="deep-grid" id="actionCenterPage"></div>
       </section>
-
       <section class="page" id="escalation-log">
-        <div class="page-title"><h2>سجل التصعيد</h2><p>سلم تصعيد تلقائي حسب التأخير والأهمية: مدير المسار، مدير المشروع، الإدارة العليا، ثم إدارة السمعة.</p></div>
+        <div class="page-title"><h2>سجل التصعيد</h2><p>سلم تصعيد تلقائي حسب التأخير والأهمية.</p></div>
         <div class="deep-grid" id="escalationPage"></div>
       </section>
-
       <section class="page" id="approvals-center">
-        <div class="page-title"><h2>مركز الاعتمادات</h2><p>كل اعتماد له مالك، موعد، أثر تأخير، وحالة إغلاق واضحة.</p></div>
+        <div class="page-title"><h2>مركز الاعتمادات</h2><p>كل اعتماد له مالك وموعد وحالة إغلاق.</p></div>
         <div class="deep-grid" id="approvalsPage"></div>
       </section>
-
       <section class="page" id="change-control">
-        <div class="page-title"><h2>إدارة التغيير</h2><p>حوكمة تغييرات المشروع وربطها بالوقت والتكلفة والجودة والمخاطر.</p></div>
+        <div class="page-title"><h2>إدارة التغيير</h2><p>حوكمة تغييرات المشروع.</p></div>
         <div class="deep-grid" id="changePage"></div>
       </section>
-
       <section class="page" id="evidence-tracker">
-        <div class="page-title"><h2>سجل التوثيق والأدلة</h2><p>قياس نسبة الإغلاقات المدعومة بالأدلة وتحديد العناصر التي لا تصلح للاعتماد بدون إثبات.</p></div>
+        <div class="page-title"><h2>سجل التوثيق والأدلة</h2><p>قياس نسبة الإغلاقات المدعومة بالأدلة.</p></div>
         <div class="deep-grid" id="evidenceTrackerPage"></div>
       </section>
-
       <section class="page" id="data-trust">
-        <div class="page-title"><h2>جودة البيانات</h2><p>فحص جودة البيانات: الحقول الناقصة، الملاك، التواريخ، القرارات، المخاطر، والأدلة.</p></div>
+        <div class="page-title"><h2>جودة البيانات</h2><p>فحص جودة البيانات والحقول الناقصة.</p></div>
         <div class="deep-grid" id="dataTrustPage"></div>
       </section>
-
       <section class="page" id="operational-assistant">
-        <div class="page-title"><h2>التوصيات التشغيلية</h2><p>توصيات تشغيلية مباشرة مبنية على مؤشرات المخاطر والمهام والاعتمادات والتحديثات.</p></div>
+        <div class="page-title"><h2>التوصيات التشغيلية</h2><p>توصيات مبنية على مؤشرات المخاطر والمهام.</p></div>
         <div class="deep-grid" id="assistantPage"></div>
       </section>
-
       <section class="page" id="meeting-intelligence">
-        <div class="page-title"><h2>متابعة الاجتماعات</h2><p>تحويل الاجتماعات إلى قرارات ومهام وملاك ومواعيد قابلة للمتابعة.</p></div>
+        <div class="page-title"><h2>متابعة الاجتماعات</h2><p>تحويل الاجتماعات إلى قرارات ومهام.</p></div>
         <div class="deep-grid" id="meetingsPage"></div>
       </section>
-
       <section class="page" id="zone-readiness">
-        <div class="page-title"><h2>جاهزية المواقع والمناطق</h2><p>قراءة جاهزية المواقع والمناطق حسب التشغيل والسلامة والنظافة والتجربة والملاحظات المفتوحة.</p></div>
+        <div class="page-title"><h2>جاهزية المواقع والمناطق</h2><p>قراءة جاهزية المواقع حسب التشغيل والسلامة.</p></div>
         <div class="deep-grid" id="zonePage"></div>
       </section>
-
       <section class="page" id="field-gallery">
-        <div class="page-title"><h2>معرض التوثيق الميداني</h2><p>صور قبل/بعد، ملاحظات، إغلاقات، تقدم أعمال، وسلامة حسب المسار والمنطقة والتاريخ.</p></div>
+        <div class="page-title"><h2>معرض التوثيق الميداني</h2><p>صور قبل/بعد وإغلاقات حسب المسار والمنطقة.</p></div>
         <div class="deep-grid" id="fieldGalleryPage"></div>
       </section>
-
       <section class="page" id="risk-reputation">
-        <div class="page-title"><h2>إدارة المخاطر والسمعة</h2><p>حماية الوقت والسلامة والتجربة والسمعة عبر قراءة مركبة للمخاطر.</p></div>
+        <div class="page-title"><h2>إدارة المخاطر والسمعة</h2><p>حماية الوقت والسلامة والسمعة.</p></div>
         <div class="deep-grid" id="riskPage"></div>
       </section>
-
       <section class="page" id="visitor-experience">
-        <div class="page-title"><h2>تجربة الزائر</h2><p>نقرأ المشروع بعين الزائر: الوصول، الخدمة، النظافة، السلامة، والراحة.</p></div>
+        <div class="page-title"><h2>تجربة الزائر</h2><p>نقرأ المشروع بعين الزائر.</p></div>
         <div class="deep-grid" id="visitorPage"></div>
       </section>
-
       <section class="page" id="track-performance">
-        <div class="page-title"><h2>أداء المسارات</h2><p>قياس عميق لكل مسار وربطه بالأثر والمخاطر والقرارات.</p></div>
+        <div class="page-title"><h2>أداء المسارات</h2><p>قياس عميق لكل مسار وربطه بالأثر والمخاطر.</p></div>
         <div class="track-cards" id="trackPage"></div>
       </section>
-
       <section class="page" id="evidence-room">
-        <div class="page-title"><h2>مركز التوثيق والأدلة</h2><p>كل رقم يجب أن يكون له دليل: محضر، اعتماد، صورة، تقرير، أو رابط.</p></div>
+        <div class="page-title"><h2>مركز التوثيق والأدلة</h2><p>كل رقم يجب أن يكون له دليل.</p></div>
         <div class="deep-grid" id="evidencePage"></div>
       </section>
-
       <section class="page" id="scenario-simulator">
-        <div class="page-title"><h2>تحليل السيناريوهات</h2><p>اختبار أثر التأخير والمخاطر قبل وقوعها وتحويلها إلى إجراءات.</p></div>
+        <div class="page-title"><h2>تحليل السيناريوهات</h2><p>اختبار أثر التأخير والمخاطر.</p></div>
         <div class="deep-grid" id="scenarioPage"></div>
       </section>
-
       <section class="page" id="daily-brief">
-        <div class="page-title"><h2>الموجز التشغيلي اليومي</h2><p>ملخص سريع للفريق: ما الذي يجب إغلاقه اليوم؟ ومن يملك القرار؟</p></div>
+        <div class="page-title"><h2>الموجز التشغيلي اليومي</h2><p>ما الذي يجب إغلاقه اليوم؟</p></div>
         <div class="deep-grid" id="dailyPage"></div>
       </section>
-
       <section class="page" id="reports-center">
         <div class="page-title"><h2>مركز التقارير</h2><p>توليد تقارير تشغيلية وتنفيذية من البيانات الحية.</p></div>
         <div class="deep-grid" id="reportsPage"></div>
       </section>
-
       <section class="page" id="audit-log">
-        <div class="page-title"><h2>سجل التدقيق</h2><p>توثيق التغييرات المهمة: الإشعارات، المهام، الاعتمادات، والإجراءات التشغيلية.</p></div>
+        <div class="page-title"><h2>سجل التدقيق</h2><p>توثيق التغييرات المهمة.</p></div>
         <div class="deep-grid" id="auditPage"></div>
       </section>
-
       <section class="page" id="system-health">
-        <div class="page-title"><h2>حالة النظام</h2><p>تشخيص الاتصال، المزامنة، القوالب، الأمان، ومحرك التقارير.</p></div>
+        <div class="page-title"><h2>حالة النظام</h2><p>تشخيص الاتصال والمزامنة ومحرك التقارير.</p></div>
         <div class="deep-grid" id="systemPage"></div>
       </section>
-
       <section class="page" id="deployment-readiness">
-        <div class="page-title"><h2>جاهزية النشر والتشغيل</h2><p>فحص نهائي قبل رفع المنصة على Render، مع النسخ الاحتياطي والتصدير واختبار التكاملات.</p></div>
+        <div class="page-title"><h2>جاهزية النشر والتشغيل</h2><p>فحص نهائي قبل رفع المنصة.</p></div>
         <div class="deep-grid" id="deploymentPage">
           <article class="deep-card full"><h3>جاري تحميل فحص الجاهزية...</h3></article>
         </div>
       </section>
-
       <section class="page" id="go-live-control">
-        <div class="page-title"><h2>مركز الإطلاق التشغيلي</h2><p>خطة تشغيل أول أسبوع، بوابات القبول، إجراءات العرض، وتسليم الفريق بعد النشر.</p></div>
+        <div class="page-title"><h2>مركز الإطلاق التشغيلي</h2><p>خطة تشغيل أول أسبوع وبوابات القبول.</p></div>
         <section class="deep-grid" id="goLivePage"></section>
       </section>
-
       <section class="page" id="data-lab">
-        <div class="page-title"><h2>مركز البيانات</h2><p>قراءة خام للبيانات الداخلة من Google Sheet وتحويلها إلى مؤشرات.</p></div>
+        <div class="page-title"><h2>مركز البيانات</h2><p>قراءة خام للبيانات من Google Sheet.</p></div>
         <div class="deep-grid" id="dataPage"></div>
       </section>
     </section>
@@ -301,8 +268,10 @@
 
   <div class="toast" id="toast"></div>
   <script src="script.js"></script>
-<script>
-if ("serviceWorker" in navigator) { window.addEventListener("load", () => navigator.serviceWorker.register("/service-worker.js").catch(()=>{})); }
-</script>
+  <script>
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => navigator.serviceWorker.register("/service-worker.js").catch(()=>{}));
+    }
+  </script>
 </body>
 </html>
