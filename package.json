@@ -1,6 +1,6 @@
 {
   "name": "kag-operational-project-management-platform-confirmed",
-  "version": "1000.8.0",
+  "version": "1000.9.0",
   "private": true,
   "description": "KAG Operational Project Management Platform — official PDF and PowerPoint report output with no end-user Excel exports",
   "main": "server.js",
@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "jsdom": "^29.1.1",
-    "pptxgenjs": "^4.0.1"
+    "pptxgenjs": "^4.0.1",
+    "pdfkit": "^0.15.0"
   }
 }

@@ -1070,9 +1070,309 @@ async function generateNodeReport(reportType, format, state){
   // إنتاج PPTX buffer
   const pptxBuf = await prs.write({outputType:"nodebuffer"});
 
-  // إذا طُلب PDF: نُرسل PPTX مع Content-Type صحيح ونُبلّغ الواجهة
-  // (LibreOffice غير متاح على Render Free — نُرجع PPTX دائماً)
-  return { buf: pptxBuf, format: "pptx" };
+  if(format === "pptx") return { buf: pptxBuf, format: "pptx" };
+
+  // PDF: نُولّد مباشرة من pdfkit بدون LibreOffice
+  const pdfBuf = await buildPdfFromReportData(reportType, state);
+  return { buf: pdfBuf, format: "pdf" };
+}
+
+// ═══════════════════════════════════════════════════════════════
+// محرك PDF — pdfkit — بدون LibreOffice أو Python
+// يبني ملف PDF احترافي مباشرة من بيانات المنصة
+// ═══════════════════════════════════════════════════════════════
+async function buildPdfFromReportData(reportType, state){
+  const PDFDocument = require("pdfkit");
+  return await new Promise((resolve, reject)=>{
+    try{
+      const doc = new PDFDocument({
+        size:"A4", margins:{top:40,bottom:40,left:40,right:40},
+        info:{ Title:"تقرير KAG", Author:"منصة حدائق الملك عبدالله" }
+      });
+      const chunks = [];
+      doc.on("data", c => chunks.push(c));
+      doc.on("end",  () => resolve(Buffer.concat(chunks)));
+      doc.on("error", reject);
+
+      const tracks  = state.tracks  || [];
+      const items   = state.items   || [];
+      const today   = new Date().toISOString().slice(0,10);
+      const overall = tracks.length ? Math.round(tracks.reduce((a,t)=>a+(t.progress||0),0)/tracks.length) : 0;
+      const isDone  = i => /مكتملة|مكتمل|معتمدة|معتمد/i.test(i.status||"");
+      const isRisk  = i => /خطر|معرض|متأخر|حرج/i.test(i.status||"")||i.type==="risks";
+      const isAct   = i => /قيد|تحت|نشط/i.test(i.status||"");
+      const fmtD    = d => { try{ return d?new Date(String(d).slice(0,10)).toLocaleDateString("en-GB"):"—"; }catch{ return d||"—"; } };
+      const clip    = (s,n=70) => String(s||"—").slice(0,n);
+
+      const risks     = items.filter(isRisk);
+      const critical  = risks.filter(r=>/خطر|حرج|معرضة/i.test(r.status||""));
+      const doneItems = items.filter(isDone);
+      const activeItems = items.filter(isAct);
+      const overdue   = items.filter(i=>!isDone(i)&&i.due&&i.due<today);
+
+      // ── ألوان ──
+      const BG    = "#0D1B2A";
+      const GOLD  = "#C9A84C";
+      const DARK  = "#0A1628";
+      const MUTED = "#7A9BB5";
+      const GREEN = "#27AE60";
+      const RED   = "#E74C3C";
+      const AMBER = "#F39C12";
+      const BLUE  = "#2979FF";
+      const WHITE = "#EAF0F7";
+      const ROW_A = "#0F2035";
+      const ROW_B = "#162A3D";
+
+      const W = doc.page.width  - 80; // عرض قابل للاستخدام
+      const pageH = doc.page.height;
+
+      // ── عنوان التقرير حسب النوع ──
+      const titleMap = {
+        daily_ops:  "تقرير غرفة العمليات اليومي",
+        executive:  "تقرير اللجنة التنفيذية",
+        approvals:  "تقرير الاعتمادات والتصعيد",
+        evidence:   "تقرير الأدلة الميدانية",
+      };
+      const reportTitle = titleMap[reportType] || "التقرير الشامل";
+
+      // ── دوال مساعدة ──
+      function drawBg(){
+        doc.rect(0,0,doc.page.width,pageH).fill(BG);
+      }
+      function drawHeader(title, sub){
+        doc.rect(0,0,doc.page.width,8).fill(GOLD);
+        doc.rect(0,8,doc.page.width,60).fill(DARK);
+        doc.fillColor(GOLD).fontSize(18).font("Helvetica-Bold")
+           .text(title, 40, 16, {width:W, align:"right"});
+        if(sub) doc.fillColor(MUTED).fontSize(9).font("Helvetica")
+           .text(sub, 40, 40, {width:W, align:"right"});
+        doc.moveTo(40,70).lineTo(doc.page.width-40,70).lineWidth(0.5).strokeColor(GOLD).stroke();
+        doc.y = 80;
+      }
+      function drawKpiRow(kpis){
+        const kw = W / kpis.length;
+        kpis.forEach((k,i)=>{
+          const x = 40 + i*kw;
+          doc.rect(x+3,doc.y,kw-6,44).fill(ROW_A);
+          doc.fillColor(k.c||BLUE).fontSize(16).font("Helvetica-Bold")
+             .text(String(k.v), x+3, doc.y+4, {width:kw-6, align:"center"});
+          doc.fillColor(MUTED).fontSize(8).font("Helvetica")
+             .text(k.l, x+3, doc.y+24, {width:kw-6, align:"center"});
+        });
+        doc.y += 54;
+      }
+      function drawSectionLabel(text){
+        doc.rect(40, doc.y, W, 18).fill(ROW_A);
+        doc.rect(40, doc.y, 3, 18).fill(GOLD);
+        doc.fillColor(GOLD).fontSize(9).font("Helvetica-Bold")
+           .text(text, 46, doc.y+4, {width:W-10, align:"right"});
+        doc.y += 22;
+      }
+      function drawTable(headers, rows, colW){
+        // guard: if near bottom, add page
+        if(doc.y > pageH - 120){ doc.addPage(); drawBg(); doc.y = 40; }
+        const autoW = W / headers.length;
+        const ww = colW || headers.map(()=>autoW);
+        // رأس
+        let x=40;
+        const hdrH=16;
+        doc.rect(40, doc.y, W, hdrH).fill(GOLD);
+        headers.forEach((h,i)=>{
+          doc.fillColor(DARK).fontSize(8).font("Helvetica-Bold")
+             .text(clip(h,20), x+2, doc.y+3, {width:ww[i]-4, align:"center"});
+          x+=ww[i];
+        });
+        doc.y += hdrH;
+        const rowH = 16;
+        const showRows = rows.length ? rows : [headers.map(()=>"—")];
+        showRows.slice(0,18).forEach((row,ri)=>{
+          if(doc.y > pageH - 60){ doc.addPage(); drawBg(); doc.y = 40; }
+          const rbg = ri%2===0 ? ROW_A : ROW_B;
+          doc.rect(40, doc.y, W, rowH).fill(rbg);
+          let cx=40;
+          row.forEach((cell,ci)=>{
+            doc.fillColor(WHITE).fontSize(7.5).font("Helvetica")
+               .text(clip(String(cell||"—"),ci===0?55:30), cx+2, doc.y+3, {width:ww[ci]-4, align:"right", lineBreak:false});
+            cx+=ww[ci];
+          });
+          doc.y += rowH;
+        });
+        doc.y += 8;
+      }
+      function drawFooter(){
+        const fy = pageH - 28;
+        doc.rect(0, fy, doc.page.width, 28).fill(DARK);
+        doc.fillColor(MUTED).fontSize(7).font("Helvetica")
+           .text(`حدائق الملك عبدالله 2026  |  ${today}  |  سري — للاستخدام الداخلي`,
+             40, fy+8, {width:W, align:"center"});
+      }
+
+      // ══ صفحة الغلاف ══
+      drawBg();
+      doc.rect(0,0,8,pageH).fill(GOLD);
+      doc.fillColor(GOLD).fontSize(28).font("Helvetica-Bold")
+         .text("حدائق الملك عبدالله", 20, 120, {width:W+20, align:"right"});
+      doc.fillColor(MUTED).fontSize(14).font("Helvetica")
+         .text("King Abdullah Gardens 2026", 20, 158, {width:W+20, align:"right"});
+      doc.moveTo(20,190).lineTo(doc.page.width-20,190).lineWidth(0.8).strokeColor(GOLD).stroke();
+      doc.fillColor(WHITE).fontSize(20).font("Helvetica-Bold")
+         .text(reportTitle, 20, 205, {width:W+20, align:"right"});
+      // KPIs على الغلاف
+      const coverKpis = [
+        {l:"الإنجاز العام",    v:overall+"%",        c:overall>=70?GREEN:overall>=45?AMBER:RED},
+        {l:"المخاطر الحرجة",  v:critical.length,     c:RED},
+        {l:"عدد المسارات",    v:tracks.length,        c:BLUE},
+        {l:"إجمالي العناصر",  v:items.length,         c:WHITE},
+      ];
+      const kw2 = W/4;
+      coverKpis.forEach((k,i)=>{
+        const x=40+i*kw2;
+        doc.rect(x+3,280,kw2-6,48).fill(ROW_A);
+        doc.fillColor(k.c).fontSize(20).font("Helvetica-Bold")
+           .text(String(k.v), x+3, 287, {width:kw2-6, align:"center"});
+        doc.fillColor(MUTED).fontSize(8).font("Helvetica")
+           .text(k.l, x+3, 311, {width:kw2-6, align:"center"});
+      });
+      doc.fillColor(MUTED).fontSize(9).font("Helvetica")
+         .text(`التاريخ: ${today}  |  أُعدّ تلقائياً من بيانات المنصة`,
+           40, 360, {width:W, align:"right"});
+      drawFooter();
+
+      // ══ صفحة ملخص المؤشرات ══
+      doc.addPage(); drawBg();
+      drawHeader("ملخص المؤشرات التنفيذية",
+        `الإنجاز: ${overall}%  |  المسارات: ${tracks.length}  |  العناصر: ${items.length}`);
+      drawKpiRow([
+        {l:"الإنجاز العام",  v:overall+"%",          c:overall>=70?GREEN:overall>=45?AMBER:RED},
+        {l:"مهام منجزة",     v:doneItems.length,      c:GREEN},
+        {l:"قيد التنفيذ",    v:activeItems.length,    c:AMBER},
+        {l:"متأخرة",         v:overdue.length,        c:RED},
+        {l:"مخاطر كلية",    v:risks.length,          c:AMBER},
+        {l:"مخاطر حرجة",    v:critical.length,       c:RED},
+      ]);
+      drawSectionLabel("أداء المسارات");
+      drawTable(
+        ["المسار","الاسم","الإنجاز%","المخطط%","مهام","منجز","مخاطر","الحالة"],
+        tracks.map(t=>[t.id||"",t.name||"",`${t.progress||0}%`,`${t.planned||80}%`,
+          t.tasks||0,t.done||0,t.risk||0,t.status||"—"]),
+        [35,105,50,50,40,40,40,130]
+      );
+      drawFooter();
+
+      // ══ صفحات حسب نوع التقرير ══
+      if(reportType==="daily_ops"||reportType==="executive"||reportType==="comprehensive"){
+        // صفحة المخاطر
+        doc.addPage(); drawBg();
+        drawHeader("المخاطر والقرارات",`مفتوحة: ${risks.length}  |  حرجة: ${critical.length}`);
+        drawKpiRow([
+          {l:"مخاطر مفتوحة",  v:risks.length,    c:AMBER},
+          {l:"حرجة",           v:critical.length, c:RED},
+          {l:"متأخرة",         v:overdue.length,  c:RED},
+          {l:"منجزة",          v:doneItems.length,c:GREEN},
+        ]);
+        drawSectionLabel("سجل المخاطر");
+        drawTable(
+          ["المخاطرة","المسار","المالك","الحالة","الموعد"],
+          risks.length
+            ? risks.map(r=>[clip(r.title),r.track||"",r.owner||"—",r.status||"—",fmtD(r.due)])
+            : [["لا توجد مخاطر مفتوحة","","","",""]],
+          [220,60,80,80,50]
+        );
+        drawFooter();
+
+        // صفحة المهام
+        doc.addPage(); drawBg();
+        drawHeader("المهام والإجراءات",`إجمالي: ${items.length}  |  منجز: ${doneItems.length}  |  متأخر: ${overdue.length}`);
+        drawKpiRow([
+          {l:"إجمالي",  v:items.length,        c:WHITE},
+          {l:"منجز",    v:doneItems.length,     c:GREEN},
+          {l:"نشط",     v:activeItems.length,   c:AMBER},
+          {l:"متأخر",   v:overdue.length,       c:RED},
+        ]);
+        drawSectionLabel("قائمة المهام");
+        drawTable(
+          ["المهمة","المسار","المالك","الحالة","الموعد"],
+          items.length
+            ? items.map(i=>[clip(i.title),i.track||"",i.owner||"—",i.status||"—",fmtD(i.due)])
+            : [["لا توجد مهام","","","",""]],
+          [220,60,80,80,50]
+        );
+        drawFooter();
+      }
+
+      if(reportType==="approvals"||reportType==="executive"||reportType==="comprehensive"){
+        const appr = state.management?.approvals || items.filter(i=>i.type==="permits"||/اعتماد/.test(i.title||""));
+        const late  = appr.filter(a=>a.due&&a.due<today&&!isDone(a));
+        doc.addPage(); drawBg();
+        drawHeader("الاعتمادات والتصعيد",`إجمالي: ${appr.length}  |  متأخرة: ${late.length}`);
+        drawKpiRow([
+          {l:"إجمالي الاعتمادات",  v:appr.length,    c:WHITE},
+          {l:"متأخرة",              v:late.length,    c:RED},
+          {l:"معتمدة",              v:appr.filter(isDone).length, c:GREEN},
+          {l:"قيد الاعتماد",        v:appr.filter(a=>!isDone(a)).length, c:AMBER},
+        ]);
+        drawSectionLabel("سجل الاعتمادات");
+        drawTable(
+          ["الاعتماد","المسار","المالك","الحالة","الموعد"],
+          appr.length
+            ? appr.map(a=>[clip(a.title),a.track||"",a.owner||"—",a.status||"—",fmtD(a.due)])
+            : [["لا توجد اعتمادات بانتظار الإجراء","","","",""]],
+          [220,60,80,80,50]
+        );
+        drawFooter();
+      }
+
+      if(reportType==="evidence"||reportType==="comprehensive"){
+        doc.addPage(); drawBg();
+        drawHeader("الأدلة الميدانية والإغلاقات",
+          `مغلق: ${doneItems.length}  |  نسبة الإغلاق: ${items.length?Math.round(doneItems.length*100/items.length):0}%`);
+        drawKpiRow([
+          {l:"مهام مغلقة",   v:doneItems.length,   c:GREEN},
+          {l:"إجمالي",        v:items.length,        c:WHITE},
+          {l:"نسبة الإغلاق",  v:(items.length?Math.round(doneItems.length*100/items.length):0)+"%",c:GREEN},
+          {l:"مخاطر مفتوحة", v:risks.length,        c:AMBER},
+        ]);
+        drawSectionLabel("المهام المغلقة — أدلة الإغلاق");
+        drawTable(
+          ["المهمة","المسار","المالك","الحالة","تاريخ الإغلاق"],
+          doneItems.length
+            ? doneItems.slice(0,18).map(i=>[clip(i.title),i.track||"",i.owner||"—",i.status||"—",fmtD(i.due)])
+            : [["لا توجد مهام مغلقة حتى الآن","","","",""]],
+          [220,60,80,80,50]
+        );
+        drawFooter();
+      }
+
+      // شريحة لكل مسار في comprehensive
+      if(reportType==="comprehensive"){
+        tracks.forEach(track=>{
+          const tid = track.id||track.name;
+          const ti  = items.filter(i=>i.track===tid||i.track===track.name||i.track===track.id);
+          const tR  = ti.filter(isRisk);
+          doc.addPage(); drawBg();
+          drawHeader(`مسار ${track.id||""} — ${track.name||""}`,
+            `الإنجاز: ${track.progress||0}%  |  المهام: ${ti.length}  |  المخاطر: ${tR.length}`);
+          drawKpiRow([
+            {l:"الإنجاز",  v:`${track.progress||0}%`,c:(track.progress||0)>=70?GREEN:(track.progress||0)>=45?AMBER:RED},
+            {l:"المخطط",   v:`${track.planned||80}%`, c:MUTED},
+            {l:"منجز",     v:ti.filter(isDone).length, c:GREEN},
+            {l:"مخاطر",    v:tR.length,                c:RED},
+          ]);
+          drawSectionLabel("مهام المسار");
+          drawTable(
+            ["المهمة","المالك","الحالة","الموعد","التقدم%"],
+            ti.length
+              ? ti.slice(0,18).map(i=>[clip(i.title),i.owner||"—",i.status||"—",fmtD(i.due),`${i.progress||0}%`])
+              : [["لا توجد بيانات لهذا المسار","","","",""]],
+            [230,80,80,55,45]
+          );
+          drawFooter();
+        });
+      }
+
+      doc.end();
+    }catch(e){ reject(e); }
+  });
 }
 function deploymentCheck(name, ok, weight, recommendation){ return {name, ok:!!ok, weight:Number(weight||1), recommendation: recommendation||""}; }
 function computeDeploymentReadiness(){
