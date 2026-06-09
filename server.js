@@ -760,11 +760,11 @@ function normalizeReportFormat(v){
   if(["ppt","pptx","powerpoint"].includes(x)) return "pptx";
   return "pdf";
 }
-function asciiReportName(reportType, format){
+function asciiReportName(reportType, ext){
   const safeNames = {"comprehensive":"Comprehensive","أ":"TrackA","ب":"TrackB","ج":"TrackC","د":"TrackD","daily_ops":"DailyOps","executive":"Executive","approvals":"Approvals","evidence":"Evidence"};
-  const safeName  = safeNames[reportType] || "Report";
-  const dateStr   = new Date().toISOString().slice(0,10);
-  return `KAGA-Report-${safeName}-${dateStr}.${format}`;
+  const safeName = safeNames[reportType] || "Report";
+  const dateStr  = new Date().toISOString().slice(0,10);
+  return `KAGA-Report-${safeName}-${dateStr}.${ext}`;
 }
 function composeReportState(req){
   const base = JSON.parse(JSON.stringify(filterStateForUser(req, liveState || buildState(fallbackItems())) || {}));
@@ -779,600 +779,286 @@ function composeReportState(req){
   return base;
 }
 // ═══════════════════════════════════════════════════════════════
-// محرك PPTX/PDF — pptxgenjs (Node.js) — بدون Python
-// يعمل على Render Free Plan بدون أي تبعيات خارجية
+// محرك التقارير — Node.js خالص — pptxgenjs للـ PPTX، HTML للـ PDF
+// لا يحتاج Python أو LibreOffice أو أي أداة خارجية
 // ═══════════════════════════════════════════════════════════════
-async function generateNodeReport(reportType, format, state){
+async function generateReport(reportType, format, state){
+  if(format==="pptx") return { buf: await buildPptx(reportType, state), ext:"pptx" };
+  return { buf: Buffer.from(buildHtmlReport(reportType, state),"utf-8"), ext:"html" };
+}
+
+async function buildPptx(reportType, state){
   const PptxGenJS = require("pptxgenjs");
   const prs = new PptxGenJS();
   prs.layout = "LAYOUT_WIDE";
+  const C={bg:"0D1B2A",gold:"C9A84C",white:"EAF0F7",muted:"7A9BB5",green:"27AE60",red:"E74C3C",amber:"F39C12",blue:"2979FF",line:"1E3A5F",rowA:"0F2035",rowB:"162A3D",hdr:"0A1628"};
+  const tracks=state.tracks||[],items=state.items||[];
+  const today=new Date().toISOString().slice(0,10);
+  const overall=tracks.length?Math.round(tracks.reduce((a,t)=>a+(t.progress||0),0)/tracks.length):0;
+  const isDone=i=>/مكتملة|مكتمل|معتمدة|معتمد/i.test(i.status||"");
+  const isRisk=i=>/خطر|معرض|متأخر|حرج/i.test(i.status||"")||i.type==="risks";
+  const isAct=i=>/قيد|تحت|نشط/i.test(i.status||"");
+  const fmtD=d=>{try{return d?new Date(String(d).slice(0,10)).toLocaleDateString("ar-SA"):"—";}catch{return d||"—";}};
+  const clip=(s,n=55)=>String(s||"—").slice(0,n);
+  const risks=items.filter(isRisk),critical=risks.filter(r=>/خطر|حرج|معرضة/i.test(r.status||""));
+  const doneItems=items.filter(isDone),actItems=items.filter(isAct),overdue=items.filter(i=>!isDone(i)&&i.due&&i.due<today);
 
-  const C = {
-    bg:"0D1B2A", gold:"C9A84C", white:"EAF0F7", muted:"7A9BB5",
-    green:"27AE60", red:"E74C3C", amber:"F39C12", blue:"2979FF",
-    line:"1E3A5F", rowA:"0F2035", rowB:"162A3D", header:"0A1628",
-    greenBg:"1A3A2A", redBg:"3A1A1A", amberBg:"3A2E0A",
-  };
-
-  const tracks  = state.tracks  || [];
-  const items   = state.items   || [];
-  const today   = new Date().toISOString().slice(0,10);
-  const weekNum = Math.ceil((Date.now() - new Date(new Date().getFullYear(),0,1)) / 604800000);
-  const overall = tracks.length ? Math.round(tracks.reduce((a,t)=>a+(t.progress||0),0)/tracks.length) : 0;
-
-  const isDone   = i => /مكتملة|مكتمل|معتمدة|معتمد|Completed/i.test(i.status||"");
-  const isRisk   = i => /خطر|معرض|متأخر|حرج/i.test(i.status||"") || i.type==="risks";
-  const isActive = i => /قيد|تحت|نشط/i.test(i.status||"");
-  const fmtD     = d => { try{ return d?new Date(String(d).slice(0,10)).toLocaleDateString("ar-SA"):"—"; }catch{ return d||"—"; } };
-  const clip     = (s,n=55) => String(s||"—").slice(0,n);
-
-  const risks     = items.filter(isRisk);
-  const critical  = risks.filter(r=>/خطر|حرج|معرضة/i.test(r.status||""));
-  const doneItems = items.filter(isDone);
-  const actItems  = items.filter(isActive);
-  const overdue   = items.filter(i=>!isDone(i)&&i.due&&i.due<today);
-
-  // ── إضافة مستطيل خلفية ──
-  function bg(s){ s.addShape(prs.ShapeType.rect,{x:0,y:0,w:"100%",h:"100%",fill:{color:C.bg}}); }
-
-  // ── شريط العنوان ──
-  function addHeader(s, title, sub){
+  function bg(s){s.addShape(prs.ShapeType.rect,{x:0,y:0,w:"100%",h:"100%",fill:{color:C.bg}});}
+  function hdr(s,t,sub){
     s.addShape(prs.ShapeType.rect,{x:0,y:0,w:"100%",h:0.07,fill:{color:C.gold}});
-    s.addShape(prs.ShapeType.rect,{x:0,y:0.07,w:"100%",h:1.1,fill:{color:C.header}});
-    s.addText(title,{x:0.35,y:0.12,w:12.6,h:0.62,
-      fontSize:24,bold:true,color:C.gold,fontFace:"Arial",align:"right",valign:"middle"});
-    if(sub) s.addText(sub,{x:0.35,y:0.74,w:12.6,h:0.34,
-      fontSize:11,color:C.muted,fontFace:"Arial",align:"right",valign:"middle"});
-    s.addShape(prs.ShapeType.line,{x:0.35,y:1.17,w:12.6,h:0,line:{color:C.line,width:1}});
+    s.addShape(prs.ShapeType.rect,{x:0,y:0.07,w:"100%",h:1.08,fill:{color:C.hdr}});
+    s.addText(t,{x:0.35,y:0.12,w:12.6,h:0.6,fontSize:23,bold:true,color:C.gold,fontFace:"Arial",align:"right",valign:"middle"});
+    if(sub)s.addText(sub,{x:0.35,y:0.74,w:12.6,h:0.34,fontSize:10,color:C.muted,fontFace:"Arial",align:"right"});
+    s.addShape(prs.ShapeType.line,{x:0.35,y:1.15,w:12.6,h:0,line:{color:C.line,width:1}});
   }
-
-  // ── صف KPI ──
-  function addKpis(s, kpis, top=1.3){
-    const w=(13.33-0.7)/kpis.length;
-    kpis.forEach((k,i)=>{
+  function kpis(s,arr,top=1.28){
+    const w=(13.33-0.7)/arr.length;
+    arr.forEach((k,i)=>{
       const x=0.35+i*w;
-      s.addShape(prs.ShapeType.rect,{x:x+0.05,y:top,w:w-0.1,h:0.82,fill:{color:C.rowA},line:{color:C.line,width:0.8}});
-      s.addText(String(k.v),{x:x+0.08,y:top+0.03,w:w-0.16,h:0.44,
-        fontSize:20,bold:true,color:k.c||C.blue,fontFace:"Arial",align:"center",valign:"middle"});
-      s.addText(k.l,{x:x+0.08,y:top+0.49,w:w-0.16,h:0.26,
-        fontSize:9,color:C.muted,fontFace:"Arial",align:"center",valign:"top"});
+      s.addShape(prs.ShapeType.rect,{x:x+0.05,y:top,w:w-0.1,h:0.8,fill:{color:C.rowA},line:{color:C.line,width:0.8}});
+      s.addText(String(k.v),{x:x+0.08,y:top+0.03,w:w-0.16,h:0.42,fontSize:19,bold:true,color:k.c||C.blue,fontFace:"Arial",align:"center",valign:"middle"});
+      s.addText(k.l,{x:x+0.08,y:top+0.47,w:w-0.16,h:0.26,fontSize:9,color:C.muted,fontFace:"Arial",align:"center"});
     });
   }
-
-  // ── جدول بيانات ──
-  function addTable(s, headers, rows, top, colW){
-    const nC = headers.length;
-    const autoW = (13.33-0.7)/nC;
-    const ww = colW || headers.map(()=>autoW);
-    // رأس
+  function tbl(s,headers,rows,top,cw){
+    const nC=headers.length,autoW=(13.33-0.7)/nC,ww=cw||headers.map(()=>autoW);
     let x=0.35;
     headers.forEach((h,i)=>{
-      s.addShape(prs.ShapeType.rect,{x,y:top,w:ww[i],h:0.30,fill:{color:C.gold},line:{color:C.gold,width:0}});
-      s.addText(h,{x:x+0.03,y:top,w:ww[i]-0.06,h:0.30,
-        fontSize:9.5,bold:true,color:C.header,fontFace:"Arial",align:"center",valign:"middle"});
+      s.addShape(prs.ShapeType.rect,{x,y:top,w:ww[i],h:0.28,fill:{color:C.gold},line:{color:C.gold,width:0}});
+      s.addText(h,{x:x+0.03,y:top,w:ww[i]-0.06,h:0.28,fontSize:9,bold:true,color:C.hdr,fontFace:"Arial",align:"center",valign:"middle"});
       x+=ww[i];
     });
-    const show = rows.length ? rows : [headers.map(()=>"—")];
+    const show=rows.length?rows:[headers.map(()=>"—")];
     show.slice(0,12).forEach((row,ri)=>{
-      const rbg = ri%2===0?C.rowA:C.rowB;
-      let cx=0.35;
+      const rbg=ri%2===0?C.rowA:C.rowB;let cx=0.35;
       row.forEach((cell,ci)=>{
-        s.addShape(prs.ShapeType.rect,{x:cx,y:top+0.30+ri*0.295,w:ww[ci],h:0.295,fill:{color:rbg},line:{color:C.line,width:0.5}});
-        s.addText(clip(cell,ci===0?52:40),{x:cx+0.04,y:top+0.30+ri*0.295,w:ww[ci]-0.08,h:0.295,
-          fontSize:9,color:C.white,fontFace:"Arial",align:"right",valign:"middle"});
+        s.addShape(prs.ShapeType.rect,{x:cx,y:top+0.28+ri*0.28,w:ww[ci],h:0.28,fill:{color:rbg},line:{color:C.line,width:0.5}});
+        s.addText(clip(cell,ci===0?50:35),{x:cx+0.04,y:top+0.28+ri*0.28,w:ww[ci]-0.08,h:0.28,fontSize:8.5,color:C.white,fontFace:"Arial",align:"right",valign:"middle"});
         cx+=ww[ci];
       });
     });
   }
-
-  // ── تسمية قسم ──
-  function secLabel(s,t,top){
-    s.addShape(prs.ShapeType.rect,{x:0.35,y:top,w:12.63,h:0.26,fill:{color:C.rowA},line:{color:C.gold,width:0.8}});
-    s.addText(t,{x:0.45,y:top,w:12.43,h:0.26,fontSize:10,bold:true,color:C.gold,fontFace:"Arial",align:"right",valign:"middle"});
+  function sec(s,t,top){
+    s.addShape(prs.ShapeType.rect,{x:0.35,y:top,w:12.63,h:0.24,fill:{color:C.rowA},line:{color:C.gold,width:0.8}});
+    s.addText(t,{x:0.45,y:top,w:12.43,h:0.24,fontSize:9.5,bold:true,color:C.gold,fontFace:"Arial",align:"right",valign:"middle"});
+  }
+  function foot(s){
+    s.addShape(prs.ShapeType.rect,{x:0,y:7.26,w:"100%",h:0.24,fill:{color:C.hdr}});
+    s.addText(`حدائق الملك عبدالله 2026  |  ${today}  |  سري — للاستخدام الداخلي`,{x:0.35,y:7.26,w:12.63,h:0.24,fontSize:8,color:C.muted,fontFace:"Arial",align:"center"});
+  }
+  function cover(title,sub){
+    const s=prs.addSlide();bg(s);
+    s.addShape(prs.ShapeType.rect,{x:0,y:0,w:0.12,h:"100%",fill:{color:C.gold}});
+    s.addText("حدائق الملك عبدالله",{x:0.5,y:0.9,w:12.3,h:0.75,fontSize:32,bold:true,color:C.gold,fontFace:"Arial",align:"right"});
+    s.addText("King Abdullah Gardens 2026",{x:0.5,y:1.65,w:12.3,h:0.4,fontSize:15,color:C.muted,fontFace:"Arial",align:"right"});
+    s.addShape(prs.ShapeType.line,{x:0.5,y:2.1,w:12.3,h:0,line:{color:C.gold,width:2}});
+    s.addText(title,{x:0.5,y:2.25,w:12.3,h:0.65,fontSize:24,bold:true,color:C.white,fontFace:"Arial",align:"right"});
+    s.addText(sub||"",{x:0.5,y:2.95,w:12.3,h:0.38,fontSize:12,color:C.muted,fontFace:"Arial",align:"right"});
+    const colorO=overall>=70?C.green:overall>=45?C.amber:C.red;
+    [[overall+"%","الإنجاز",colorO],[critical.length,"مخاطر حرجة",C.red],[tracks.length,"المسارات",C.blue],[items.length,"العناصر",C.white]].forEach(([v,l,c],i)=>{
+      const x=0.5+i*3.08;
+      s.addShape(prs.ShapeType.rect,{x,y:3.55,w:2.9,h:0.72,fill:{color:C.rowA},line:{color:C.line,width:1}});
+      s.addText(String(v),{x,y:3.58,w:2.9,h:0.38,fontSize:22,bold:true,color:c,fontFace:"Arial",align:"center"});
+      s.addText(l,{x,y:3.98,w:2.9,h:0.26,fontSize:10,color:C.muted,fontFace:"Arial",align:"center"});
+    });
+    s.addText(`التاريخ: ${today}  |  أُعدّ تلقائياً من بيانات المنصة`,{x:0.5,y:6.7,w:12.3,h:0.3,fontSize:10,color:C.muted,fontFace:"Arial",align:"right"});
+    foot(s);
+  }
+  function summaryPage(){
+    const s=prs.addSlide();bg(s);
+    hdr(s,"ملخص المؤشرات",`الإنجاز: ${overall}%  |  المسارات: ${tracks.length}  |  العناصر: ${items.length}  |  المخاطر: ${risks.length}`);
+    kpis(s,[{l:"الإنجاز العام",v:overall+"%",c:overall>=70?C.green:overall>=45?C.amber:C.red},{l:"مهام منجزة",v:doneItems.length,c:C.green},{l:"قيد التنفيذ",v:actItems.length,c:C.amber},{l:"متأخرة",v:overdue.length,c:C.red},{l:"مخاطر",v:risks.length,c:C.amber},{l:"حرجة",v:critical.length,c:C.red}]);
+    sec(s,"أداء المسارات",2.2);
+    tbl(s,["المسار","الاسم","الإنجاز%","المخطط%","مهام","منجز","مخاطر","الحالة"],
+      tracks.map(t=>[t.id||"",t.name||"",`${t.progress||0}%`,`${t.planned||80}%`,t.tasks||0,t.done||0,t.risk||0,t.status||"—"]),
+      2.46,[0.5,2.0,0.8,0.8,0.65,0.65,0.65,1.38]);
+    foot(s);
+  }
+  function risksPage(){
+    const s=prs.addSlide();bg(s);
+    hdr(s,"المخاطر والقرارات",`مفتوحة: ${risks.length}  |  حرجة: ${critical.length}`);
+    kpis(s,[{l:"مخاطر مفتوحة",v:risks.length,c:C.amber},{l:"حرجة",v:critical.length,c:C.red},{l:"متأخرة",v:overdue.length,c:C.red},{l:"منجزة",v:doneItems.length,c:C.green}]);
+    sec(s,"سجل المخاطر",2.2);
+    tbl(s,["المخاطرة","المسار","المالك","الحالة","الموعد"],
+      risks.length?risks.map(r=>[clip(r.title),r.track||"",r.owner||"—",r.status||"—",fmtD(r.due)]):[["لا توجد مخاطر مفتوحة","","","",""]],
+      2.46,[4.3,1.5,1.9,1.75,1.28]);
+    foot(s);
+  }
+  function actionsPage(trackId=null){
+    const s=prs.addSlide();bg(s);
+    const src=trackId?items.filter(i=>i.track===trackId||i.track===tracks.find(t=>t.id===trackId)?.name):items;
+    const od=src.filter(i=>!isDone(i)&&i.due&&i.due<today);
+    hdr(s,trackId?`مهام مسار ${trackId}`:"المهام والإجراءات",`إجمالي: ${src.length}  |  منجز: ${src.filter(isDone).length}  |  متأخر: ${od.length}`);
+    kpis(s,[{l:"إجمالي",v:src.length,c:C.white},{l:"منجز",v:src.filter(isDone).length,c:C.green},{l:"نشط",v:src.filter(isAct).length,c:C.amber},{l:"متأخر",v:od.length,c:C.red}]);
+    sec(s,"قائمة المهام",2.2);
+    tbl(s,["المهمة","المسار","المالك","الحالة","الموعد","التقدم%"],
+      src.length?src.slice(0,12).map(i=>[clip(i.title),i.track||"",i.owner||"—",i.status||"—",fmtD(i.due),`${i.progress||0}%`]):[["لا توجد مهام","","","","",""]],
+      2.46,[4.1,1.3,1.8,1.65,1.35,0.98]);
+    foot(s);
+  }
+  function approvalsPage(){
+    const s=prs.addSlide();bg(s);
+    const appr=state.management?.approvals||items.filter(i=>i.type==="permits"||/اعتماد/.test(i.title||""));
+    const late=appr.filter(a=>a.due&&a.due<today&&!isDone(a));
+    hdr(s,"الاعتمادات والتصعيد",`إجمالي: ${appr.length}  |  متأخرة: ${late.length}`);
+    kpis(s,[{l:"إجمالي",v:appr.length,c:C.white},{l:"متأخرة",v:late.length,c:C.red},{l:"معتمدة",v:appr.filter(isDone).length,c:C.green},{l:"قيد الاعتماد",v:appr.filter(a=>!isDone(a)).length,c:C.amber}]);
+    sec(s,"سجل الاعتمادات",2.2);
+    tbl(s,["الاعتماد","المسار","المالك","الحالة","الموعد"],
+      appr.length?appr.map(a=>[clip(a.title),a.track||"",a.owner||"—",a.status||"—",fmtD(a.due)]):[["لا توجد اعتمادات بانتظار الإجراء","","","",""]],
+      2.46,[4.3,1.5,1.9,1.75,1.28]);
+    foot(s);
+  }
+  function evidencePage(){
+    const s=prs.addSlide();bg(s);
+    hdr(s,"الأدلة الميدانية",`مغلق: ${doneItems.length}  |  نسبة الإغلاق: ${items.length?Math.round(doneItems.length*100/items.length):0}%`);
+    kpis(s,[{l:"مهام مغلقة",v:doneItems.length,c:C.green},{l:"إجمالي",v:items.length,c:C.white},{l:"نسبة الإغلاق",v:(items.length?Math.round(doneItems.length*100/items.length):0)+"%",c:C.green},{l:"مخاطر مفتوحة",v:risks.length,c:C.amber}]);
+    sec(s,"المهام المغلقة",2.2);
+    tbl(s,["المهمة","المسار","المالك","الحالة","تاريخ الإغلاق"],
+      doneItems.length?doneItems.slice(0,12).map(i=>[clip(i.title),i.track||"",i.owner||"—",i.status||"—",fmtD(i.due)]):[["لا توجد مهام مغلقة","","","",""]],
+      2.46,[4.3,1.5,1.9,1.75,1.28]);
+    foot(s);
+  }
+  function trackPage(track){
+    const s=prs.addSlide();bg(s);
+    const tid=track.id||track.name;
+    const ti=items.filter(i=>i.track===tid||i.track===track.name||i.track===track.id);
+    const tR=ti.filter(isRisk);
+    const cp=(track.progress||0)>=70?C.green:(track.progress||0)>=45?C.amber:C.red;
+    hdr(s,`مسار ${track.id||""} — ${track.name||""}`,`الإنجاز: ${track.progress||0}%  |  المهام: ${ti.length}  |  المخاطر: ${tR.length}`);
+    kpis(s,[{l:"الإنجاز",v:`${track.progress||0}%`,c:cp},{l:"المخطط",v:`${track.planned||80}%`,c:C.muted},{l:"منجز",v:ti.filter(isDone).length,c:C.green},{l:"مخاطر",v:tR.length,c:C.red},{l:"الحالة",v:track.status||"—",c:C.white}]);
+    sec(s,"مهام المسار",2.2);
+    tbl(s,["المهمة","المالك","الحالة","الموعد","التقدم%","النوع"],
+      ti.length?ti.slice(0,12).map(i=>[clip(i.title),i.owner||"—",i.status||"—",fmtD(i.due),`${i.progress||0}%`,i.type||"—"]):[["لا توجد بيانات","","","","",""]],
+      2.46,[4.2,1.8,1.65,1.35,0.88,1.35]);
+    foot(s);
   }
 
-  // ── تذييل ──
-  function footer(s){
-    s.addShape(prs.ShapeType.rect,{x:0,y:7.26,w:"100%",h:0.24,fill:{color:C.header}});
-    s.addText(`حدائق الملك عبدالله 2026  |  ${today}  |  سري — للاستخدام الداخلي فقط`,
-      {x:0.35,y:7.26,w:12.63,h:0.24,fontSize:8,color:C.muted,fontFace:"Arial",align:"center"});
-  }
+  if(reportType==="daily_ops"){cover("تقرير غرفة العمليات اليومي",today);summaryPage();actionsPage();risksPage();}
+  else if(reportType==="executive"){cover("تقرير اللجنة التنفيذية",`الإنجاز العام: ${overall}%`);summaryPage();risksPage();approvalsPage();}
+  else if(reportType==="approvals"){cover("تقرير الاعتمادات والتصعيد","");approvalsPage();risksPage();}
+  else if(reportType==="evidence"){cover("تقرير الأدلة الميدانية","");evidencePage();actionsPage();}
+  else if(/^[أبجدهو]$/.test(reportType)){const t=tracks.find(x=>x.id===reportType)||{id:reportType,name:reportType,progress:0};cover(`تقرير مسار ${reportType}`,t.name||"");trackPage(t);actionsPage(reportType);risksPage();}
+  else{cover("التقرير الشامل",`${tracks.length} مسار | ${items.length} عنصر`);summaryPage();risksPage();approvalsPage();evidencePage();actionsPage();tracks.forEach(t=>trackPage(t));}
 
-  // ══ شريحة الغلاف ══
-  function coverSlide(titleTxt, sub){
-    const s=prs.addSlide();
-    bg(s);
-    s.addShape(prs.ShapeType.rect,{x:0,y:0,w:0.14,h:"100%",fill:{color:C.gold}});
-    s.addShape(prs.ShapeType.rect,{x:0.14,y:2.65,w:13.19,h:0.05,fill:{color:C.gold}});
-    s.addText("حدائق الملك عبدالله",      {x:0.55,y:0.8,  w:12.4,h:0.75,fontSize:34,bold:true, color:C.gold, fontFace:"Arial",align:"right"});
-    s.addText("King Abdullah Gardens 2026",{x:0.55,y:1.55, w:12.4,h:0.42,fontSize:16,color:C.muted,fontFace:"Arial",align:"right"});
-    s.addText(titleTxt,                    {x:0.55,y:2.78, w:12.4,h:0.65,fontSize:24,bold:true, color:C.white,fontFace:"Arial",align:"right"});
-    s.addText(sub||"",                     {x:0.55,y:3.48, w:12.4,h:0.4, fontSize:13,color:C.muted, fontFace:"Arial",align:"right"});
-    const colorO = overall>=70?C.green:overall>=45?C.amber:C.red;
-    s.addShape(prs.ShapeType.rect,{x:0.55,y:4.1,w:2.4,h:0.7,fill:{color:C.rowA},line:{color:C.line,width:1}});
-    s.addText(`${overall}%`,{x:0.55,y:4.12,w:2.4,h:0.36,fontSize:22,bold:true,color:colorO,fontFace:"Arial",align:"center"});
-    s.addText("الإنجاز العام",{x:0.55,y:4.5,w:2.4,h:0.26,fontSize:10,color:C.muted,fontFace:"Arial",align:"center"});
-    s.addShape(prs.ShapeType.rect,{x:3.15,y:4.1,w:2.4,h:0.7,fill:{color:C.rowA},line:{color:C.line,width:1}});
-    s.addText(String(critical.length),{x:3.15,y:4.12,w:2.4,h:0.36,fontSize:22,bold:true,color:C.red,fontFace:"Arial",align:"center"});
-    s.addText("مخاطر حرجة",{x:3.15,y:4.5,w:2.4,h:0.26,fontSize:10,color:C.muted,fontFace:"Arial",align:"center"});
-    s.addShape(prs.ShapeType.rect,{x:5.75,y:4.1,w:2.4,h:0.7,fill:{color:C.rowA},line:{color:C.line,width:1}});
-    s.addText(String(tracks.length),{x:5.75,y:4.12,w:2.4,h:0.36,fontSize:22,bold:true,color:C.blue,fontFace:"Arial",align:"center"});
-    s.addText("المسارات",{x:5.75,y:4.5,w:2.4,h:0.26,fontSize:10,color:C.muted,fontFace:"Arial",align:"center"});
-    s.addShape(prs.ShapeType.rect,{x:8.35,y:4.1,w:2.4,h:0.7,fill:{color:C.rowA},line:{color:C.line,width:1}});
-    s.addText(String(items.length),{x:8.35,y:4.12,w:2.4,h:0.36,fontSize:22,bold:true,color:C.white,fontFace:"Arial",align:"center"});
-    s.addText("إجمالي العناصر",{x:8.35,y:4.5,w:2.4,h:0.26,fontSize:10,color:C.muted,fontFace:"Arial",align:"center"});
-    s.addText(`التاريخ: ${today}  |  الأسبوع: ${weekNum}  |  أُعدّ تلقائياً من بيانات المنصة`,
-      {x:0.55,y:6.7,w:12.4,h:0.3,fontSize:10,color:C.muted,fontFace:"Arial",align:"right"});
-    footer(s);
-  }
-
-  // ══ ملخص المؤشرات ══
-  function summarySlide(){
-    const s=prs.addSlide(); bg(s);
-    addHeader(s,"ملخص المؤشرات التنفيذية",
-      `الإنجاز: ${overall}%  |  المسارات: ${tracks.length}  |  المهام: ${items.length}  |  المخاطر: ${risks.length}`);
-    addKpis(s,[
-      {l:"الإنجاز العام",    v:overall+"%",            c:overall>=70?C.green:overall>=45?C.amber:C.red},
-      {l:"مهام منجزة",       v:doneItems.length,        c:C.green},
-      {l:"قيد التنفيذ",      v:actItems.length,         c:C.amber},
-      {l:"متأخرة",           v:overdue.length,          c:C.red},
-      {l:"مخاطر كلية",      v:risks.length,            c:C.amber},
-      {l:"مخاطر حرجة",      v:critical.length,         c:C.red},
-    ],1.3);
-    secLabel(s,"أداء المسارات",2.25);
-    addTable(s,
-      ["المسار","الاسم","الإنجاز%","المخطط%","مهام","منجز","نشط","مخاطر","الحالة","المالك"],
-      tracks.map(t=>[t.id||"",t.name||"",`${t.progress||0}%`,`${t.planned||80}%`,
-        t.tasks||0,t.done||0,t.active||0,t.risk||0,t.status||"—",t.lead||"—"]),
-      2.52,[0.45,1.85,0.75,0.75,0.65,0.65,0.65,0.65,1.55,1.6]
-    );
-    footer(s);
-  }
-
-  // ══ شريحة المخاطر ══
-  function risksSlide(){
-    const s=prs.addSlide(); bg(s);
-    addHeader(s,"المخاطر والقرارات",`مخاطر مفتوحة: ${risks.length}  |  حرجة: ${critical.length}  |  متأخرة: ${overdue.length}`);
-    addKpis(s,[
-      {l:"مخاطر مفتوحة",    v:risks.length,    c:C.amber},
-      {l:"حرجة",             v:critical.length, c:C.red},
-      {l:"تحت المتابعة",    v:risks.filter(r=>/متابعة|قيد/.test(r.status||"")).length, c:C.amber},
-      {l:"مهام متأخرة",     v:overdue.length,  c:C.red},
-    ],1.3);
-    secLabel(s,"سجل المخاطر",2.25);
-    addTable(s,
-      ["المخاطرة","المسار","المالك","الحالة","الموعد"],
-      risks.length
-        ? risks.map(r=>[clip(r.title),r.track||"",r.owner||"—",r.status||"—",fmtD(r.due)])
-        : [["لا توجد مخاطر مفتوحة","","","",""]],
-      2.52,[4.2,1.5,1.9,1.75,1.4]
-    );
-    footer(s);
-  }
-
-  // ══ شريحة المهام ══
-  function actionsSlide(trackId=null){
-    const s=prs.addSlide(); bg(s);
-    const src = trackId
-      ? items.filter(i=>(i.track===trackId||i.track===tracks.find(t=>t.id===trackId)?.name))
-      : items;
-    const od = src.filter(i=>!isDone(i)&&i.due&&i.due<today);
-    addHeader(s, trackId?`مهام مسار ${trackId}`:"المهام والإجراءات",
-      `إجمالي: ${src.length}  |  منجز: ${src.filter(isDone).length}  |  نشط: ${src.filter(isActive).length}  |  متأخر: ${od.length}`);
-    addKpis(s,[
-      {l:"إجمالي",  v:src.length,                    c:C.white},
-      {l:"منجز",    v:src.filter(isDone).length,      c:C.green},
-      {l:"نشط",     v:src.filter(isActive).length,    c:C.amber},
-      {l:"متأخر",   v:od.length,                      c:C.red},
-    ],1.3);
-    secLabel(s,"قائمة المهام",2.25);
-    addTable(s,
-      ["المهمة","المسار","المالك","الحالة","الموعد","التقدم%"],
-      src.length
-        ? src.map(i=>[clip(i.title),i.track||"",i.owner||"—",i.status||"—",fmtD(i.due),`${i.progress||0}%`])
-        : [["لا توجد مهام","","","","",""]],
-      2.52,[4.2,1.3,1.8,1.65,1.35,1.0]
-    );
-    footer(s);
-  }
-
-  // ══ شريحة الاعتمادات ══
-  function approvalsSlide(){
-    const s=prs.addSlide(); bg(s);
-    const appr = state.management?.approvals || items.filter(i=>i.type==="permits"||/اعتماد/.test(i.title||""));
-    const late  = appr.filter(a=>a.due&&a.due<today&&!isDone(a));
-    addHeader(s,"الاعتمادات والتصعيد",`إجمالي: ${appr.length}  |  متأخرة: ${late.length}`);
-    addKpis(s,[
-      {l:"إجمالي الاعتمادات",  v:appr.length,   c:C.white},
-      {l:"متأخرة",              v:late.length,   c:C.red},
-      {l:"معتمدة",              v:appr.filter(isDone).length, c:C.green},
-      {l:"قيد الاعتماد",        v:appr.filter(a=>!isDone(a)&&!late.includes(a)).length, c:C.amber},
-    ],1.3);
-    secLabel(s,"سجل الاعتمادات",2.25);
-    const rows = appr.length
-      ? appr.map(a=>[clip(a.title),a.track||"",a.owner||"—",a.status||"—",fmtD(a.due),a.type||"—"])
-      : [["لا توجد اعتمادات بانتظار الإجراء","","","","",""]];
-    addTable(s,["الاعتماد","المسار","المالك","الحالة","الموعد","النوع"],rows,2.52,[3.8,1.4,1.8,1.65,1.35,1.0]);
-    footer(s);
-  }
-
-  // ══ شريحة الأدلة ══
-  function evidenceSlide(){
-    const s=prs.addSlide(); bg(s);
-    const fe = state.management?.fieldEvidence || doneItems;
-    addHeader(s,"الأدلة الميدانية والإغلاقات",`مهام مغلقة: ${doneItems.length}  |  نسبة الإغلاق: ${items.length?Math.round(doneItems.length*100/items.length):0}%`);
-    addKpis(s,[
-      {l:"مهام مغلقة",    v:doneItems.length,    c:C.green},
-      {l:"إجمالي المهام", v:items.length,        c:C.white},
-      {l:"نسبة الإغلاق",  v:(items.length?Math.round(doneItems.length*100/items.length):0)+"%", c:C.green},
-      {l:"مخاطر مفتوحة", v:risks.length,        c:C.amber},
-    ],1.3);
-    secLabel(s,"المهام المغلقة — أدلة الإغلاق",2.25);
-    const rows = doneItems.length
-      ? doneItems.slice(0,12).map(i=>[clip(i.title),i.track||"",i.owner||"—",i.status||"—",fmtD(i.due)])
-      : [["لا توجد مهام مغلقة حتى الآن","","","",""]];
-    addTable(s,["المهمة","المسار","المالك","الحالة","تاريخ الإغلاق"],rows,2.52,[4.2,1.5,1.9,1.75,1.4]);
-    footer(s);
-  }
-
-  // ══ شريحة مسار واحد ══
-  function trackSlide(track){
-    const s=prs.addSlide(); bg(s);
-    const tid  = track.id||track.name;
-    const ti   = items.filter(i=>i.track===tid||i.track===track.name||i.track===track.id);
-    const tR   = ti.filter(isRisk);
-    const colorP = (track.progress||0)>=70?C.green:(track.progress||0)>=45?C.amber:C.red;
-    addHeader(s,`مسار ${track.id||""} — ${track.name||""}`,
-      `الإنجاز: ${track.progress||0}%  |  المهام: ${ti.length}  |  المخاطر: ${tR.length}  |  الحالة: ${track.status||"—"}`);
-    addKpis(s,[
-      {l:"الإنجاز",  v:`${track.progress||0}%`, c:colorP},
-      {l:"المخطط",   v:`${track.planned||80}%`, c:C.muted},
-      {l:"منجز",     v:ti.filter(isDone).length, c:C.green},
-      {l:"نشط",      v:ti.filter(isActive).length,c:C.amber},
-      {l:"مخاطر",    v:tR.length,                c:C.red},
-      {l:"الحالة",   v:track.status||"—",         c:C.white},
-    ],1.3);
-    secLabel(s,"مهام المسار",2.25);
-    addTable(s,
-      ["المهمة","المالك","الحالة","الموعد","التقدم%","النوع"],
-      ti.length
-        ? ti.slice(0,12).map(i=>[clip(i.title),i.owner||"—",i.status||"—",fmtD(i.due),`${i.progress||0}%`,i.type||"—"])
-        : [["لا توجد بيانات لهذا المسار","","","","",""]],
-      2.52,[4.2,1.8,1.65,1.35,0.9,1.38]
-    );
-    footer(s);
-  }
-
-  // ══ بناء التقرير حسب النوع ══
-  if(reportType==="daily_ops"){
-    coverSlide("تقرير غرفة العمليات اليومي",`الأسبوع ${weekNum} | ${today}`);
-    summarySlide(); actionsSlide(); risksSlide();
-  } else if(reportType==="executive"){
-    coverSlide("تقرير اللجنة التنفيذية",`الإنجاز العام: ${overall}%`);
-    summarySlide(); risksSlide(); approvalsSlide();
-  } else if(reportType==="approvals"){
-    coverSlide("تقرير الاعتمادات والتصعيد",`متأخرة: ${items.filter(i=>i.due&&i.due<today&&!isDone(i)).length}`);
-    approvalsSlide(); risksSlide(); actionsSlide();
-  } else if(reportType==="evidence"){
-    coverSlide("تقرير الأدلة الميدانية",`مهام مغلقة: ${doneItems.length}`);
-    evidenceSlide(); actionsSlide();
-  } else if(/^[أبجدهو]$/.test(reportType)){
-    const track = tracks.find(t=>t.id===reportType)||{id:reportType,name:reportType,progress:0};
-    coverSlide(`تقرير مسار ${reportType}`,track.name||"");
-    trackSlide(track); actionsSlide(reportType); risksSlide();
-  } else {
-    // comprehensive — جميع المسارات
-    coverSlide("التقرير الشامل",`${tracks.length} مسار | ${items.length} عنصر`);
-    summarySlide(); risksSlide(); approvalsSlide(); evidenceSlide(); actionsSlide();
-    tracks.forEach(t=>trackSlide(t));
-  }
-
-  // إنتاج PPTX buffer
-  const pptxBuf = await prs.write({outputType:"nodebuffer"});
-
-  if(format === "pptx") return { buf: pptxBuf, format: "pptx" };
-
-  // PDF: نُولّد مباشرة من pdfkit بدون LibreOffice
-  const pdfBuf = await buildPdfFromReportData(reportType, state);
-  return { buf: pdfBuf, format: "pdf" };
+  return await prs.write({outputType:"nodebuffer"});
 }
 
-// ═══════════════════════════════════════════════════════════════
-// محرك PDF — pdfkit — بدون LibreOffice أو Python
-// يبني ملف PDF احترافي مباشرة من بيانات المنصة
-// ═══════════════════════════════════════════════════════════════
-async function buildPdfFromReportData(reportType, state){
-  const PDFDocument = require("pdfkit");
-  return await new Promise((resolve, reject)=>{
-    try{
-      const doc = new PDFDocument({
-        size:"A4", margins:{top:40,bottom:40,left:40,right:40},
-        info:{ Title:"تقرير KAG", Author:"منصة حدائق الملك عبدالله" }
-      });
-      const chunks = [];
-      doc.on("data", c => chunks.push(c));
-      doc.on("end",  () => resolve(Buffer.concat(chunks)));
-      doc.on("error", reject);
+function buildHtmlReport(reportType, state){
+  const tracks=state.tracks||[],items=state.items||[];
+  const today=new Date().toISOString().slice(0,10);
+  const overall=tracks.length?Math.round(tracks.reduce((a,t)=>a+(t.progress||0),0)/tracks.length):0;
+  const isDone=i=>/مكتملة|مكتمل|معتمدة|معتمد/i.test(i.status||"");
+  const isRisk=i=>/خطر|معرض|متأخر|حرج/i.test(i.status||"")||i.type==="risks";
+  const isAct=i=>/قيد|تحت|نشط/i.test(i.status||"");
+  const fmtD=d=>{try{return d?new Date(String(d).slice(0,10)).toLocaleDateString("ar-SA"):"—";}catch{return d||"—";}};
+  const esc=s=>String(s||"—").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").slice(0,80);
+  const risks=items.filter(isRisk),critical=risks.filter(r=>/خطر|حرج|معرضة/i.test(r.status||""));
+  const doneItems=items.filter(isDone),actItems=items.filter(isAct),overdue=items.filter(i=>!isDone(i)&&i.due&&i.due<today);
+  const titleMap={daily_ops:"تقرير غرفة العمليات اليومي",executive:"تقرير اللجنة التنفيذية",approvals:"تقرير الاعتمادات والتصعيد",evidence:"تقرير الأدلة الميدانية",comprehensive:"التقرير الشامل"};
+  const rTitle=titleMap[reportType]||`تقرير مسار ${reportType}`;
+  const colorO=overall>=70?"#27AE60":overall>=45?"#F39C12":"#E74C3C";
+  const kpiBox=(l,v,c="#2979FF")=>`<div class="kpi"><div class="kv" style="color:${c}">${esc(String(v))}</div><div class="kl">${esc(l)}</div></div>`;
+  const tbl=(headers,rows,empty="لا توجد بيانات")=>{
+    if(!rows.length)rows=[[empty,...headers.slice(1).map(()=>"")]];
+    return `<table><thead><tr>${headers.map(h=>`<th>${esc(h)}</th>`).join("")}</tr></thead><tbody>${rows.slice(0,25).map((r,i)=>`<tr class="${i%2?"alt":""}">${r.map(c=>`<td>${esc(c)}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
+  };
+  const sec=(t,content)=>`<div class="sec"><div class="sec-hd">${esc(t)}</div>${content}</div>`;
+  const pb=()=>`<div class="pb"></div>`;
+  const pgtitle=t=>`<div class="pt">${esc(t)}</div>`;
 
-      const tracks  = state.tracks  || [];
-      const items   = state.items   || [];
-      const today   = new Date().toISOString().slice(0,10);
-      const overall = tracks.length ? Math.round(tracks.reduce((a,t)=>a+(t.progress||0),0)/tracks.length) : 0;
-      const isDone  = i => /مكتملة|مكتمل|معتمدة|معتمد/i.test(i.status||"");
-      const isRisk  = i => /خطر|معرض|متأخر|حرج/i.test(i.status||"")||i.type==="risks";
-      const isAct   = i => /قيد|تحت|نشط/i.test(i.status||"");
-      const fmtD    = d => { try{ return d?new Date(String(d).slice(0,10)).toLocaleDateString("en-GB"):"—"; }catch{ return d||"—"; } };
-      const clip    = (s,n=70) => String(s||"—").slice(0,n);
+  let body=`
+  <div class="cover">
+    <div class="logo">حدائق الملك عبدالله</div>
+    <div class="sub">King Abdullah Gardens 2026</div>
+    <div class="line"></div>
+    <div class="rtitle">${esc(rTitle)}</div>
+    <div class="krow">${kpiBox("الإنجاز العام",overall+"%",colorO)}${kpiBox("المخاطر الحرجة",critical.length,"#E74C3C")}${kpiBox("المسارات",tracks.length,"#2979FF")}${kpiBox("العناصر",items.length,"#EAF0F7")}</div>
+    <div class="date">التاريخ: ${today}  |  أُعدّ تلقائياً من بيانات المنصة</div>
+  </div>${pb()}
+  ${pgtitle("ملخص المؤشرات التنفيذية")}
+  <div class="krow">${kpiBox("الإنجاز",overall+"%",colorO)}${kpiBox("منجز",doneItems.length,"#27AE60")}${kpiBox("نشط",actItems.length,"#F39C12")}${kpiBox("متأخر",overdue.length,"#E74C3C")}${kpiBox("مخاطر",risks.length,"#F39C12")}${kpiBox("حرجة",critical.length,"#E74C3C")}</div>
+  ${sec("أداء المسارات",tbl(["المسار","الاسم","الإنجاز%","المخطط%","مهام","منجز","مخاطر","الحالة"],tracks.map(t=>[t.id||"",t.name||"",`${t.progress||0}%`,`${t.planned||80}%`,t.tasks||0,t.done||0,t.risk||0,t.status||"—"]),"لا توجد مسارات"))}`;
 
-      const risks     = items.filter(isRisk);
-      const critical  = risks.filter(r=>/خطر|حرج|معرضة/i.test(r.status||""));
-      const doneItems = items.filter(isDone);
-      const activeItems = items.filter(isAct);
-      const overdue   = items.filter(i=>!isDone(i)&&i.due&&i.due<today);
-
-      // ── ألوان ──
-      const BG    = "#0D1B2A";
-      const GOLD  = "#C9A84C";
-      const DARK  = "#0A1628";
-      const MUTED = "#7A9BB5";
-      const GREEN = "#27AE60";
-      const RED   = "#E74C3C";
-      const AMBER = "#F39C12";
-      const BLUE  = "#2979FF";
-      const WHITE = "#EAF0F7";
-      const ROW_A = "#0F2035";
-      const ROW_B = "#162A3D";
-
-      const W = doc.page.width  - 80; // عرض قابل للاستخدام
-      const pageH = doc.page.height;
-
-      // ── عنوان التقرير حسب النوع ──
-      const titleMap = {
-        daily_ops:  "تقرير غرفة العمليات اليومي",
-        executive:  "تقرير اللجنة التنفيذية",
-        approvals:  "تقرير الاعتمادات والتصعيد",
-        evidence:   "تقرير الأدلة الميدانية",
-      };
-      const reportTitle = titleMap[reportType] || "التقرير الشامل";
-
-      // ── دوال مساعدة ──
-      function drawBg(){
-        doc.rect(0,0,doc.page.width,pageH).fill(BG);
-      }
-      function drawHeader(title, sub){
-        doc.rect(0,0,doc.page.width,8).fill(GOLD);
-        doc.rect(0,8,doc.page.width,60).fill(DARK);
-        doc.fillColor(GOLD).fontSize(18).font("Helvetica-Bold")
-           .text(title, 40, 16, {width:W, align:"right"});
-        if(sub) doc.fillColor(MUTED).fontSize(9).font("Helvetica")
-           .text(sub, 40, 40, {width:W, align:"right"});
-        doc.moveTo(40,70).lineTo(doc.page.width-40,70).lineWidth(0.5).strokeColor(GOLD).stroke();
-        doc.y = 80;
-      }
-      function drawKpiRow(kpis){
-        const kw = W / kpis.length;
-        kpis.forEach((k,i)=>{
-          const x = 40 + i*kw;
-          doc.rect(x+3,doc.y,kw-6,44).fill(ROW_A);
-          doc.fillColor(k.c||BLUE).fontSize(16).font("Helvetica-Bold")
-             .text(String(k.v), x+3, doc.y+4, {width:kw-6, align:"center"});
-          doc.fillColor(MUTED).fontSize(8).font("Helvetica")
-             .text(k.l, x+3, doc.y+24, {width:kw-6, align:"center"});
-        });
-        doc.y += 54;
-      }
-      function drawSectionLabel(text){
-        doc.rect(40, doc.y, W, 18).fill(ROW_A);
-        doc.rect(40, doc.y, 3, 18).fill(GOLD);
-        doc.fillColor(GOLD).fontSize(9).font("Helvetica-Bold")
-           .text(text, 46, doc.y+4, {width:W-10, align:"right"});
-        doc.y += 22;
-      }
-      function drawTable(headers, rows, colW){
-        // guard: if near bottom, add page
-        if(doc.y > pageH - 120){ doc.addPage(); drawBg(); doc.y = 40; }
-        const autoW = W / headers.length;
-        const ww = colW || headers.map(()=>autoW);
-        // رأس
-        let x=40;
-        const hdrH=16;
-        doc.rect(40, doc.y, W, hdrH).fill(GOLD);
-        headers.forEach((h,i)=>{
-          doc.fillColor(DARK).fontSize(8).font("Helvetica-Bold")
-             .text(clip(h,20), x+2, doc.y+3, {width:ww[i]-4, align:"center"});
-          x+=ww[i];
-        });
-        doc.y += hdrH;
-        const rowH = 16;
-        const showRows = rows.length ? rows : [headers.map(()=>"—")];
-        showRows.slice(0,18).forEach((row,ri)=>{
-          if(doc.y > pageH - 60){ doc.addPage(); drawBg(); doc.y = 40; }
-          const rbg = ri%2===0 ? ROW_A : ROW_B;
-          doc.rect(40, doc.y, W, rowH).fill(rbg);
-          let cx=40;
-          row.forEach((cell,ci)=>{
-            doc.fillColor(WHITE).fontSize(7.5).font("Helvetica")
-               .text(clip(String(cell||"—"),ci===0?55:30), cx+2, doc.y+3, {width:ww[ci]-4, align:"right", lineBreak:false});
-            cx+=ww[ci];
-          });
-          doc.y += rowH;
-        });
-        doc.y += 8;
-      }
-      function drawFooter(){
-        const fy = pageH - 28;
-        doc.rect(0, fy, doc.page.width, 28).fill(DARK);
-        doc.fillColor(MUTED).fontSize(7).font("Helvetica")
-           .text(`حدائق الملك عبدالله 2026  |  ${today}  |  سري — للاستخدام الداخلي`,
-             40, fy+8, {width:W, align:"center"});
-      }
-
-      // ══ صفحة الغلاف ══
-      drawBg();
-      doc.rect(0,0,8,pageH).fill(GOLD);
-      doc.fillColor(GOLD).fontSize(28).font("Helvetica-Bold")
-         .text("حدائق الملك عبدالله", 20, 120, {width:W+20, align:"right"});
-      doc.fillColor(MUTED).fontSize(14).font("Helvetica")
-         .text("King Abdullah Gardens 2026", 20, 158, {width:W+20, align:"right"});
-      doc.moveTo(20,190).lineTo(doc.page.width-20,190).lineWidth(0.8).strokeColor(GOLD).stroke();
-      doc.fillColor(WHITE).fontSize(20).font("Helvetica-Bold")
-         .text(reportTitle, 20, 205, {width:W+20, align:"right"});
-      // KPIs على الغلاف
-      const coverKpis = [
-        {l:"الإنجاز العام",    v:overall+"%",        c:overall>=70?GREEN:overall>=45?AMBER:RED},
-        {l:"المخاطر الحرجة",  v:critical.length,     c:RED},
-        {l:"عدد المسارات",    v:tracks.length,        c:BLUE},
-        {l:"إجمالي العناصر",  v:items.length,         c:WHITE},
-      ];
-      const kw2 = W/4;
-      coverKpis.forEach((k,i)=>{
-        const x=40+i*kw2;
-        doc.rect(x+3,280,kw2-6,48).fill(ROW_A);
-        doc.fillColor(k.c).fontSize(20).font("Helvetica-Bold")
-           .text(String(k.v), x+3, 287, {width:kw2-6, align:"center"});
-        doc.fillColor(MUTED).fontSize(8).font("Helvetica")
-           .text(k.l, x+3, 311, {width:kw2-6, align:"center"});
-      });
-      doc.fillColor(MUTED).fontSize(9).font("Helvetica")
-         .text(`التاريخ: ${today}  |  أُعدّ تلقائياً من بيانات المنصة`,
-           40, 360, {width:W, align:"right"});
-      drawFooter();
-
-      // ══ صفحة ملخص المؤشرات ══
-      doc.addPage(); drawBg();
-      drawHeader("ملخص المؤشرات التنفيذية",
-        `الإنجاز: ${overall}%  |  المسارات: ${tracks.length}  |  العناصر: ${items.length}`);
-      drawKpiRow([
-        {l:"الإنجاز العام",  v:overall+"%",          c:overall>=70?GREEN:overall>=45?AMBER:RED},
-        {l:"مهام منجزة",     v:doneItems.length,      c:GREEN},
-        {l:"قيد التنفيذ",    v:activeItems.length,    c:AMBER},
-        {l:"متأخرة",         v:overdue.length,        c:RED},
-        {l:"مخاطر كلية",    v:risks.length,          c:AMBER},
-        {l:"مخاطر حرجة",    v:critical.length,       c:RED},
-      ]);
-      drawSectionLabel("أداء المسارات");
-      drawTable(
-        ["المسار","الاسم","الإنجاز%","المخطط%","مهام","منجز","مخاطر","الحالة"],
-        tracks.map(t=>[t.id||"",t.name||"",`${t.progress||0}%`,`${t.planned||80}%`,
-          t.tasks||0,t.done||0,t.risk||0,t.status||"—"]),
-        [35,105,50,50,40,40,40,130]
-      );
-      drawFooter();
-
-      // ══ صفحات حسب نوع التقرير ══
-      if(reportType==="daily_ops"||reportType==="executive"||reportType==="comprehensive"){
-        // صفحة المخاطر
-        doc.addPage(); drawBg();
-        drawHeader("المخاطر والقرارات",`مفتوحة: ${risks.length}  |  حرجة: ${critical.length}`);
-        drawKpiRow([
-          {l:"مخاطر مفتوحة",  v:risks.length,    c:AMBER},
-          {l:"حرجة",           v:critical.length, c:RED},
-          {l:"متأخرة",         v:overdue.length,  c:RED},
-          {l:"منجزة",          v:doneItems.length,c:GREEN},
-        ]);
-        drawSectionLabel("سجل المخاطر");
-        drawTable(
-          ["المخاطرة","المسار","المالك","الحالة","الموعد"],
-          risks.length
-            ? risks.map(r=>[clip(r.title),r.track||"",r.owner||"—",r.status||"—",fmtD(r.due)])
-            : [["لا توجد مخاطر مفتوحة","","","",""]],
-          [220,60,80,80,50]
-        );
-        drawFooter();
-
-        // صفحة المهام
-        doc.addPage(); drawBg();
-        drawHeader("المهام والإجراءات",`إجمالي: ${items.length}  |  منجز: ${doneItems.length}  |  متأخر: ${overdue.length}`);
-        drawKpiRow([
-          {l:"إجمالي",  v:items.length,        c:WHITE},
-          {l:"منجز",    v:doneItems.length,     c:GREEN},
-          {l:"نشط",     v:activeItems.length,   c:AMBER},
-          {l:"متأخر",   v:overdue.length,       c:RED},
-        ]);
-        drawSectionLabel("قائمة المهام");
-        drawTable(
-          ["المهمة","المسار","المالك","الحالة","الموعد"],
-          items.length
-            ? items.map(i=>[clip(i.title),i.track||"",i.owner||"—",i.status||"—",fmtD(i.due)])
-            : [["لا توجد مهام","","","",""]],
-          [220,60,80,80,50]
-        );
-        drawFooter();
-      }
-
-      if(reportType==="approvals"||reportType==="executive"||reportType==="comprehensive"){
-        const appr = state.management?.approvals || items.filter(i=>i.type==="permits"||/اعتماد/.test(i.title||""));
-        const late  = appr.filter(a=>a.due&&a.due<today&&!isDone(a));
-        doc.addPage(); drawBg();
-        drawHeader("الاعتمادات والتصعيد",`إجمالي: ${appr.length}  |  متأخرة: ${late.length}`);
-        drawKpiRow([
-          {l:"إجمالي الاعتمادات",  v:appr.length,    c:WHITE},
-          {l:"متأخرة",              v:late.length,    c:RED},
-          {l:"معتمدة",              v:appr.filter(isDone).length, c:GREEN},
-          {l:"قيد الاعتماد",        v:appr.filter(a=>!isDone(a)).length, c:AMBER},
-        ]);
-        drawSectionLabel("سجل الاعتمادات");
-        drawTable(
-          ["الاعتماد","المسار","المالك","الحالة","الموعد"],
-          appr.length
-            ? appr.map(a=>[clip(a.title),a.track||"",a.owner||"—",a.status||"—",fmtD(a.due)])
-            : [["لا توجد اعتمادات بانتظار الإجراء","","","",""]],
-          [220,60,80,80,50]
-        );
-        drawFooter();
-      }
-
-      if(reportType==="evidence"||reportType==="comprehensive"){
-        doc.addPage(); drawBg();
-        drawHeader("الأدلة الميدانية والإغلاقات",
-          `مغلق: ${doneItems.length}  |  نسبة الإغلاق: ${items.length?Math.round(doneItems.length*100/items.length):0}%`);
-        drawKpiRow([
-          {l:"مهام مغلقة",   v:doneItems.length,   c:GREEN},
-          {l:"إجمالي",        v:items.length,        c:WHITE},
-          {l:"نسبة الإغلاق",  v:(items.length?Math.round(doneItems.length*100/items.length):0)+"%",c:GREEN},
-          {l:"مخاطر مفتوحة", v:risks.length,        c:AMBER},
-        ]);
-        drawSectionLabel("المهام المغلقة — أدلة الإغلاق");
-        drawTable(
-          ["المهمة","المسار","المالك","الحالة","تاريخ الإغلاق"],
-          doneItems.length
-            ? doneItems.slice(0,18).map(i=>[clip(i.title),i.track||"",i.owner||"—",i.status||"—",fmtD(i.due)])
-            : [["لا توجد مهام مغلقة حتى الآن","","","",""]],
-          [220,60,80,80,50]
-        );
-        drawFooter();
-      }
-
-      // شريحة لكل مسار في comprehensive
-      if(reportType==="comprehensive"){
-        tracks.forEach(track=>{
-          const tid = track.id||track.name;
-          const ti  = items.filter(i=>i.track===tid||i.track===track.name||i.track===track.id);
-          const tR  = ti.filter(isRisk);
-          doc.addPage(); drawBg();
-          drawHeader(`مسار ${track.id||""} — ${track.name||""}`,
-            `الإنجاز: ${track.progress||0}%  |  المهام: ${ti.length}  |  المخاطر: ${tR.length}`);
-          drawKpiRow([
-            {l:"الإنجاز",  v:`${track.progress||0}%`,c:(track.progress||0)>=70?GREEN:(track.progress||0)>=45?AMBER:RED},
-            {l:"المخطط",   v:`${track.planned||80}%`, c:MUTED},
-            {l:"منجز",     v:ti.filter(isDone).length, c:GREEN},
-            {l:"مخاطر",    v:tR.length,                c:RED},
-          ]);
-          drawSectionLabel("مهام المسار");
-          drawTable(
-            ["المهمة","المالك","الحالة","الموعد","التقدم%"],
-            ti.length
-              ? ti.slice(0,18).map(i=>[clip(i.title),i.owner||"—",i.status||"—",fmtD(i.due),`${i.progress||0}%`])
-              : [["لا توجد بيانات لهذا المسار","","","",""]],
-            [230,80,80,55,45]
-          );
-          drawFooter();
-        });
-      }
-
-      doc.end();
-    }catch(e){ reject(e); }
+  if(["daily_ops","executive","comprehensive"].includes(reportType)){
+    body+=`${pb()}${pgtitle("المخاطر والقرارات")}
+    <div class="krow">${kpiBox("مخاطر مفتوحة",risks.length,"#F39C12")}${kpiBox("حرجة",critical.length,"#E74C3C")}${kpiBox("متأخرة",overdue.length,"#E74C3C")}${kpiBox("منجزة",doneItems.length,"#27AE60")}</div>
+    ${sec("سجل المخاطر",tbl(["المخاطرة","المسار","المالك","الحالة","الموعد"],risks.map(r=>[r.title||"",r.track||"",r.owner||"—",r.status||"—",fmtD(r.due)]),"لا توجد مخاطر مفتوحة"))}`;
+  }
+  if(["daily_ops","comprehensive"].includes(reportType)){
+    body+=`${pb()}${pgtitle("المهام والإجراءات")}
+    <div class="krow">${kpiBox("إجمالي",items.length,"#EAF0F7")}${kpiBox("منجز",doneItems.length,"#27AE60")}${kpiBox("نشط",actItems.length,"#F39C12")}${kpiBox("متأخر",overdue.length,"#E74C3C")}</div>
+    ${sec("قائمة المهام",tbl(["المهمة","المسار","المالك","الحالة","الموعد","التقدم%"],items.slice(0,25).map(i=>[i.title||"",i.track||"",i.owner||"—",i.status||"—",fmtD(i.due),`${i.progress||0}%`]),"لا توجد مهام"))}`;
+  }
+  if(["approvals","executive","comprehensive"].includes(reportType)){
+    const appr=state.management?.approvals||items.filter(i=>i.type==="permits"||/اعتماد/.test(i.title||""));
+    const late=appr.filter(a=>a.due&&a.due<today&&!isDone(a));
+    body+=`${pb()}${pgtitle("الاعتمادات والتصعيد")}
+    <div class="krow">${kpiBox("إجمالي",appr.length,"#EAF0F7")}${kpiBox("متأخرة",late.length,"#E74C3C")}${kpiBox("معتمدة",appr.filter(isDone).length,"#27AE60")}${kpiBox("قيد الاعتماد",appr.filter(a=>!isDone(a)).length,"#F39C12")}</div>
+    ${sec("سجل الاعتمادات",tbl(["الاعتماد","المسار","المالك","الحالة","الموعد"],appr.map(a=>[a.title||"",a.track||"",a.owner||"—",a.status||"—",fmtD(a.due)]),"لا توجد اعتمادات"))}`;
+  }
+  if(["evidence","comprehensive"].includes(reportType)){
+    body+=`${pb()}${pgtitle("الأدلة الميدانية")}
+    <div class="krow">${kpiBox("مغلقة",doneItems.length,"#27AE60")}${kpiBox("إجمالي",items.length,"#EAF0F7")}${kpiBox("نسبة الإغلاق",(items.length?Math.round(doneItems.length*100/items.length):0)+"%","#27AE60")}${kpiBox("مخاطر مفتوحة",risks.length,"#F39C12")}</div>
+    ${sec("المهام المغلقة",tbl(["المهمة","المسار","المالك","الحالة","تاريخ الإغلاق"],doneItems.slice(0,25).map(i=>[i.title||"",i.track||"",i.owner||"—",i.status||"—",fmtD(i.due)]),"لا توجد مهام مغلقة"))}`;
+  }
+  const trackList=/^[أبجدهو]$/.test(reportType)?tracks.filter(t=>t.id===reportType):reportType==="comprehensive"?tracks:[];
+  trackList.forEach(track=>{
+    const tid=track.id||track.name;
+    const ti=items.filter(i=>i.track===tid||i.track===track.name||i.track===track.id);
+    const tR=ti.filter(isRisk);
+    const cp=(track.progress||0)>=70?"#27AE60":(track.progress||0)>=45?"#F39C12":"#E74C3C";
+    body+=`${pb()}${pgtitle(`مسار ${track.id||""} — ${track.name||""}`)}
+    <div class="krow">${kpiBox("الإنجاز",`${track.progress||0}%`,cp)}${kpiBox("المخطط",`${track.planned||80}%`,"#7A9BB5")}${kpiBox("منجز",ti.filter(isDone).length,"#27AE60")}${kpiBox("مخاطر",tR.length,"#E74C3C")}</div>
+    ${sec("مهام المسار",tbl(["المهمة","المالك","الحالة","الموعد","التقدم%"],ti.slice(0,20).map(i=>[i.title||"",i.owner||"—",i.status||"—",fmtD(i.due),`${i.progress||0}%`]),"لا توجد بيانات"))}`;
   });
+
+  return `<!DOCTYPE html><html lang="ar" dir="rtl"><head><meta charset="UTF-8"/>
+<title>${esc(rTitle)} — حدائق الملك عبدالله 2026</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;700;800&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Tajawal',Arial,sans-serif;background:#0D1B2A;color:#EAF0F7;direction:rtl;font-size:13px;line-height:1.6;padding:0}
+.cover{min-height:98vh;display:flex;flex-direction:column;justify-content:center;align-items:flex-end;padding:50px 60px;background:linear-gradient(140deg,#0A1628 55%,#162A3D)}
+.logo{font-size:34px;font-weight:800;color:#C9A84C;margin-bottom:6px}
+.sub{font-size:15px;color:#7A9BB5;margin-bottom:20px}
+.line{width:100%;height:3px;background:linear-gradient(90deg,transparent,#C9A84C);margin-bottom:20px;border-radius:2px}
+.rtitle{font-size:26px;font-weight:700;color:#EAF0F7;margin-bottom:28px}
+.date{font-size:11px;color:#7A9BB5;margin-top:20px}
+.krow{display:flex;gap:10px;margin:16px 0;flex-wrap:wrap;justify-content:flex-end}
+.kpi{background:#0F2035;border:1px solid #1E3A5F;border-radius:8px;padding:12px 16px;min-width:100px;text-align:center}
+.kv{font-size:20px;font-weight:800;margin-bottom:3px}
+.kl{font-size:10px;color:#7A9BB5}
+.pt{font-size:19px;font-weight:700;color:#C9A84C;padding:14px 0 8px;border-bottom:2px solid #1E3A5F;margin:0 0 14px}
+.sec{margin-bottom:24px}
+.sec-hd{font-size:12px;font-weight:700;color:#C9A84C;background:#0F2035;border-right:3px solid #C9A84C;padding:6px 10px;margin-bottom:8px;border-radius:0 4px 4px 0}
+table{width:100%;border-collapse:collapse;font-size:11.5px;margin-bottom:12px}
+thead tr{background:#C9A84C}
+th{color:#0A1628;padding:7px 9px;font-weight:700;text-align:right}
+tbody tr{background:#0F2035}
+tbody tr.alt{background:#162A3D}
+td{padding:6px 9px;color:#EAF0F7;border-bottom:1px solid #1E3A5F;text-align:right}
+.pb{page-break-after:always;break-after:page;height:40px}
+@media print{
+  body{background:#fff!important;color:#111!important}
+  .cover{background:#f8f8f8!important;min-height:auto;padding:30px}
+  .logo,.pt,.sec-hd{color:#7a5a0f!important}
+  .sub,.date,.kl{color:#555!important}
+  .kv{font-weight:800!important}
+  .kpi{background:#f5f5f5!important;border-color:#ccc!important}
+  .line{background:#7a5a0f!important}
+  table{border:1px solid #ddd}
+  thead tr{background:#8B6914!important}
+  th{color:#fff!important}
+  tbody tr{background:#fff!important}
+  tbody tr.alt{background:#f9f9f9!important}
+  td{border-color:#e0e0e0!important;color:#111!important}
+}
+@page{margin:12mm;size:A4}
+</style></head><body>
+${body}
+<script>window.addEventListener('load',()=>setTimeout(()=>window.print(),600));</script>
+</body></html>`;
 }
 function deploymentCheck(name, ok, weight, recommendation){ return {name, ok:!!ok, weight:Number(weight||1), recommendation: recommendation||""}; }
 function computeDeploymentReadiness(){
@@ -1866,15 +1552,14 @@ const server=http.createServer(async (req,res)=>{
       if(!liveState) return sendJson(res,503,{error:"البيانات غير متاحة بعد"});
       try{
         const reportState = composeReportState(req);
-        const {buf: finalBuf, format: actualFormat} = await generateNodeReport(reportType, format, reportState);
-        const fname = asciiReportName(reportType, actualFormat);
-        addAudit(req, `توليد تقرير ${actualFormat.toUpperCase()}`, "report", {type:reportType, format:actualFormat, bytes:finalBuf.length});
-        res.writeHead(200,{
-          "Content-Type": reportContentType(actualFormat),
-          "Content-Disposition":`attachment; filename="${fname}"`,
-          "Content-Length": finalBuf.length,
-          "Cache-Control":"no-store"
-        });
+        const {buf: finalBuf, ext: actualExt} = await generateReport(reportType, format, reportState);
+        const fname = asciiReportName(reportType, actualExt);
+        const ct = actualExt==="html" ? "text/html; charset=utf-8"
+                 : actualExt==="pptx" ? "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+                 : "application/pdf";
+        const cd = actualExt==="html" ? `inline; filename="${fname}"` : `attachment; filename="${fname}"`;
+        addAudit(req, `توليد تقرير ${actualExt.toUpperCase()}`, "report", {type:reportType, format:actualExt, bytes:finalBuf.length});
+        res.writeHead(200,{"Content-Type":ct,"Content-Disposition":cd,"Content-Length":finalBuf.length,"Cache-Control":"no-store"});
         return res.end(finalBuf);
       }catch(e){
         console.error("خطأ في توليد التقرير:", e);

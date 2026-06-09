@@ -291,35 +291,44 @@
     // ============================================================
     async function doGenerateReport(rtype, rname, btnEl, format='pdf'){
       const originalText = btnEl ? btnEl.textContent : "";
-      const fmt = (format || 'pdf').toLowerCase()==='pptx' ? 'pptx' : 'pdf';
-      if(btnEl){ btnEl.disabled=true; btnEl.textContent=fmt==='pdf' ? "⏳ توليد PDF..." : "⏳ توليد PowerPoint..."; }
+      const fmt = (format||'pdf').toLowerCase()==='pptx' ? 'pptx' : 'pdf';
+      if(btnEl){ btnEl.disabled=true; btnEl.textContent=fmt==='pdf'?"⏳ جارٍ تجهيز PDF...":"⏳ جارٍ تجهيز PowerPoint..."; }
       try{
-        const resp = await fetch('/api/report', {
-          method:'POST',
+        const resp = await fetch('/api/report',{
+          method:'POST', credentials:'include',
           headers:{'Content-Type':'application/json'},
           body: JSON.stringify({type:rtype, format:fmt})
         });
         if(!resp.ok){
-          let msg = `فشل توليد التقرير (${resp.status})`;
-          try{ const j=await resp.json(); if(j.error) msg=j.error; }catch(_e){}
+          let msg=`فشل توليد التقرير (${resp.status})`;
+          try{ const j=await resp.json(); if(j.error) msg=j.error; }catch(_){}
           throw new Error(msg);
         }
+        const ct = resp.headers.get('Content-Type')||'';
         const blob = await resp.blob();
-        const cd = resp.headers.get('Content-Disposition') || '';
-        const m = cd.match(/filename="?([^";]+)"?/i);
-        const ext = fmt==='pdf' ? 'pdf' : 'pptx';
-        const fallback = `KAGA-${rname.replace(/\s+/g,'-')}-${new Date().toISOString().slice(0,10)}.${ext}`;
-        const filename = m ? m[1] : fallback;
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url; a.download = filename;
-        document.body.appendChild(a); a.click(); document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-        toast(`✅ تم توليد ${fmt==='pdf'?'PDF':'PowerPoint'} جاهز للعرض: ${rname}`);
+        const dateStr = new Date().toISOString().slice(0,10);
+        const safeName = (rname||rtype).replace(/\s+/g,'-');
+
+        if(ct.includes('text/html')){
+          // PDF: يفتح في تاب جديد → نافذة الطباعة تفتح تلقائياً → احفظ كـ PDF
+          const url = URL.createObjectURL(blob);
+          const win = window.open(url,'_blank');
+          if(!win){ toast('⚠️ يرجى السماح بالنوافذ المنبثقة لفتح التقرير'); }
+          else{ toast(`✅ ${rname} — اضغط Ctrl+P ثم "حفظ كـ PDF"`); }
+          setTimeout(()=>URL.revokeObjectURL(url), 60000);
+        } else {
+          // PPTX: تنزيل مباشر
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href=url; a.download=`KAGA-${safeName}-${dateStr}.pptx`;
+          document.body.appendChild(a); a.click(); document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+          toast(`✅ تم تنزيل ${rname} بصيغة PowerPoint`);
+        }
       }catch(err){
         toast(`❌ فشل التوليد: ${err.message}`);
       }finally{
-        if(btnEl){ setTimeout(()=>{ btnEl.disabled=false; btnEl.textContent=originalText || (fmt==='pdf'?'⬇ PDF':'⬇ PowerPoint'); }, 500); }
+        if(btnEl){ setTimeout(()=>{ btnEl.disabled=false; btnEl.textContent=originalText||(fmt==='pdf'?'⬇ PDF':'⬇ PowerPoint'); },500); }
       }
     }
 
