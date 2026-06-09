@@ -3,7 +3,7 @@ services:
     name: kag-operational-analytics
     runtime: node
     plan: free
-    buildCommand: npm install && python3 -m pip install --user -r requirements.txt
+    buildCommand: npm install
     startCommand: node server.js
     healthCheckPath: /api/health
     envVars:

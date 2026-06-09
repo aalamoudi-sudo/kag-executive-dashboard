@@ -749,6 +749,7 @@ function sendText(res,status,text,type="text/plain; charset=utf-8",headers={}){
   res.writeHead(status, Object.assign({"Content-Type":type,"Cache-Control":"no-store"}, headers));
   return res.end(text);
 }
+
 function reportContentType(format){
   return format === "pdf"
     ? "application/pdf"
@@ -777,64 +778,301 @@ function composeReportState(req){
   base.operationalSummary = computeOperationalSummary(req);
   return base;
 }
-async function runPythonReport(reportType, state){
-  const {spawn} = require("child_process");
-  const scriptPath = path.join(__dirname,"generate_report.py");
-  const inputData  = JSON.stringify({type:reportType, state});
-  return await new Promise((resolve,reject)=>{
-    const chunks=[]; let stderr="";
-    const proc = spawn("python3", [scriptPath], {stdio:["pipe","pipe","pipe"]});
-    proc.stdin.write(inputData);
-    proc.stdin.end();
-    proc.stdout.on("data",chunk=>chunks.push(Buffer.isBuffer(chunk)?chunk:Buffer.from(chunk)));
-    proc.stderr.on("data",d=>{ stderr += d.toString(); });
-    proc.on("error",reject);
-    proc.on("close",code=>{
-      if(code!==0){ reject(new Error(stderr || `تعذر تشغيل محرك التقارير Python، كود الخروج ${code}`)); return; }
-      resolve(Buffer.concat(chunks));
-    });
-  });
-}
+// ═══════════════════════════════════════════════════════════════
+// محرك PPTX/PDF — pptxgenjs (Node.js) — بدون Python
+// يعمل على Render Free Plan بدون أي تبعيات خارجية
+// ═══════════════════════════════════════════════════════════════
+async function generateNodeReport(reportType, format, state){
+  const PptxGenJS = require("pptxgenjs");
+  const prs = new PptxGenJS();
+  prs.layout = "LAYOUT_WIDE";
 
-async function runPythonPdfReport(reportType, state){
-  const {spawn} = require("child_process");
-  const scriptPath = path.join(__dirname,"generate_pdf_report.py");
-  const inputData  = JSON.stringify({type:reportType, state});
-  return await new Promise((resolve,reject)=>{
-    const chunks=[]; let stderr="";
-    const proc = spawn("python3", [scriptPath], {stdio:["pipe","pipe","pipe"]});
-    proc.stdin.write(inputData);
-    proc.stdin.end();
-    proc.stdout.on("data",chunk=>chunks.push(Buffer.isBuffer(chunk)?chunk:Buffer.from(chunk)));
-    proc.stderr.on("data",d=>{ stderr += d.toString(); });
-    proc.on("error",reject);
-    proc.on("close",code=>{
-      if(code!==0){ reject(new Error(stderr || `تعذر تشغيل محرك PDF، كود الخروج ${code}`)); return; }
-      resolve(Buffer.concat(chunks));
+  const C = {
+    bg:"0D1B2A", gold:"C9A84C", white:"EAF0F7", muted:"7A9BB5",
+    green:"27AE60", red:"E74C3C", amber:"F39C12", blue:"2979FF",
+    line:"1E3A5F", rowA:"0F2035", rowB:"162A3D", header:"0A1628",
+    greenBg:"1A3A2A", redBg:"3A1A1A", amberBg:"3A2E0A",
+  };
+
+  const tracks  = state.tracks  || [];
+  const items   = state.items   || [];
+  const today   = new Date().toISOString().slice(0,10);
+  const weekNum = Math.ceil((Date.now() - new Date(new Date().getFullYear(),0,1)) / 604800000);
+  const overall = tracks.length ? Math.round(tracks.reduce((a,t)=>a+(t.progress||0),0)/tracks.length) : 0;
+
+  const isDone   = i => /مكتملة|مكتمل|معتمدة|معتمد|Completed/i.test(i.status||"");
+  const isRisk   = i => /خطر|معرض|متأخر|حرج/i.test(i.status||"") || i.type==="risks";
+  const isActive = i => /قيد|تحت|نشط/i.test(i.status||"");
+  const fmtD     = d => { try{ return d?new Date(String(d).slice(0,10)).toLocaleDateString("ar-SA"):"—"; }catch{ return d||"—"; } };
+  const clip     = (s,n=55) => String(s||"—").slice(0,n);
+
+  const risks     = items.filter(isRisk);
+  const critical  = risks.filter(r=>/خطر|حرج|معرضة/i.test(r.status||""));
+  const doneItems = items.filter(isDone);
+  const actItems  = items.filter(isActive);
+  const overdue   = items.filter(i=>!isDone(i)&&i.due&&i.due<today);
+
+  // ── إضافة مستطيل خلفية ──
+  function bg(s){ s.addShape(prs.ShapeType.rect,{x:0,y:0,w:"100%",h:"100%",fill:{color:C.bg}}); }
+
+  // ── شريط العنوان ──
+  function addHeader(s, title, sub){
+    s.addShape(prs.ShapeType.rect,{x:0,y:0,w:"100%",h:0.07,fill:{color:C.gold}});
+    s.addShape(prs.ShapeType.rect,{x:0,y:0.07,w:"100%",h:1.1,fill:{color:C.header}});
+    s.addText(title,{x:0.35,y:0.12,w:12.6,h:0.62,
+      fontSize:24,bold:true,color:C.gold,fontFace:"Arial",align:"right",valign:"middle"});
+    if(sub) s.addText(sub,{x:0.35,y:0.74,w:12.6,h:0.34,
+      fontSize:11,color:C.muted,fontFace:"Arial",align:"right",valign:"middle"});
+    s.addShape(prs.ShapeType.line,{x:0.35,y:1.17,w:12.6,h:0,line:{color:C.line,width:1}});
+  }
+
+  // ── صف KPI ──
+  function addKpis(s, kpis, top=1.3){
+    const w=(13.33-0.7)/kpis.length;
+    kpis.forEach((k,i)=>{
+      const x=0.35+i*w;
+      s.addShape(prs.ShapeType.rect,{x:x+0.05,y:top,w:w-0.1,h:0.82,fill:{color:C.rowA},line:{color:C.line,width:0.8}});
+      s.addText(String(k.v),{x:x+0.08,y:top+0.03,w:w-0.16,h:0.44,
+        fontSize:20,bold:true,color:k.c||C.blue,fontFace:"Arial",align:"center",valign:"middle"});
+      s.addText(k.l,{x:x+0.08,y:top+0.49,w:w-0.16,h:0.26,
+        fontSize:9,color:C.muted,fontFace:"Arial",align:"center",valign:"top"});
     });
-  });
-}
-async function convertPptxToPdf(pptxBuffer){
-  const {execFile} = require("child_process");
-  const os = require("os");
-  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "kag-report-"));
-  const pptxPath = path.join(tmpRoot, "report.pptx");
-  const outDir = path.join(tmpRoot, "out");
-  fs.mkdirSync(outDir, {recursive:true});
-  fs.writeFileSync(pptxPath, pptxBuffer);
-  try{
-    await new Promise((resolve,reject)=>{
-      execFile("libreoffice", ["--headless", "--convert-to", "pdf", "--outdir", outDir, pptxPath], {timeout:60000, maxBuffer:20*1024*1024}, (err, stdout, stderr)=>{
-        if(err){ reject(new Error(stderr || stdout || err.message)); return; }
-        resolve();
+  }
+
+  // ── جدول بيانات ──
+  function addTable(s, headers, rows, top, colW){
+    const nC = headers.length;
+    const autoW = (13.33-0.7)/nC;
+    const ww = colW || headers.map(()=>autoW);
+    // رأس
+    let x=0.35;
+    headers.forEach((h,i)=>{
+      s.addShape(prs.ShapeType.rect,{x,y:top,w:ww[i],h:0.30,fill:{color:C.gold},line:{color:C.gold,width:0}});
+      s.addText(h,{x:x+0.03,y:top,w:ww[i]-0.06,h:0.30,
+        fontSize:9.5,bold:true,color:C.header,fontFace:"Arial",align:"center",valign:"middle"});
+      x+=ww[i];
+    });
+    const show = rows.length ? rows : [headers.map(()=>"—")];
+    show.slice(0,12).forEach((row,ri)=>{
+      const rbg = ri%2===0?C.rowA:C.rowB;
+      let cx=0.35;
+      row.forEach((cell,ci)=>{
+        s.addShape(prs.ShapeType.rect,{x:cx,y:top+0.30+ri*0.295,w:ww[ci],h:0.295,fill:{color:rbg},line:{color:C.line,width:0.5}});
+        s.addText(clip(cell,ci===0?52:40),{x:cx+0.04,y:top+0.30+ri*0.295,w:ww[ci]-0.08,h:0.295,
+          fontSize:9,color:C.white,fontFace:"Arial",align:"right",valign:"middle"});
+        cx+=ww[ci];
       });
     });
-    const pdfPath = path.join(outDir, "report.pdf");
-    if(!fs.existsSync(pdfPath)) throw new Error("لم يتم إنشاء ملف PDF من محرك التحويل");
-    return fs.readFileSync(pdfPath);
-  }finally{
-    try{ fs.rmSync(tmpRoot, {recursive:true, force:true}); }catch(_e){}
   }
+
+  // ── تسمية قسم ──
+  function secLabel(s,t,top){
+    s.addShape(prs.ShapeType.rect,{x:0.35,y:top,w:12.63,h:0.26,fill:{color:C.rowA},line:{color:C.gold,width:0.8}});
+    s.addText(t,{x:0.45,y:top,w:12.43,h:0.26,fontSize:10,bold:true,color:C.gold,fontFace:"Arial",align:"right",valign:"middle"});
+  }
+
+  // ── تذييل ──
+  function footer(s){
+    s.addShape(prs.ShapeType.rect,{x:0,y:7.26,w:"100%",h:0.24,fill:{color:C.header}});
+    s.addText(`حدائق الملك عبدالله 2026  |  ${today}  |  سري — للاستخدام الداخلي فقط`,
+      {x:0.35,y:7.26,w:12.63,h:0.24,fontSize:8,color:C.muted,fontFace:"Arial",align:"center"});
+  }
+
+  // ══ شريحة الغلاف ══
+  function coverSlide(titleTxt, sub){
+    const s=prs.addSlide();
+    bg(s);
+    s.addShape(prs.ShapeType.rect,{x:0,y:0,w:0.14,h:"100%",fill:{color:C.gold}});
+    s.addShape(prs.ShapeType.rect,{x:0.14,y:2.65,w:13.19,h:0.05,fill:{color:C.gold}});
+    s.addText("حدائق الملك عبدالله",      {x:0.55,y:0.8,  w:12.4,h:0.75,fontSize:34,bold:true, color:C.gold, fontFace:"Arial",align:"right"});
+    s.addText("King Abdullah Gardens 2026",{x:0.55,y:1.55, w:12.4,h:0.42,fontSize:16,color:C.muted,fontFace:"Arial",align:"right"});
+    s.addText(titleTxt,                    {x:0.55,y:2.78, w:12.4,h:0.65,fontSize:24,bold:true, color:C.white,fontFace:"Arial",align:"right"});
+    s.addText(sub||"",                     {x:0.55,y:3.48, w:12.4,h:0.4, fontSize:13,color:C.muted, fontFace:"Arial",align:"right"});
+    const colorO = overall>=70?C.green:overall>=45?C.amber:C.red;
+    s.addShape(prs.ShapeType.rect,{x:0.55,y:4.1,w:2.4,h:0.7,fill:{color:C.rowA},line:{color:C.line,width:1}});
+    s.addText(`${overall}%`,{x:0.55,y:4.12,w:2.4,h:0.36,fontSize:22,bold:true,color:colorO,fontFace:"Arial",align:"center"});
+    s.addText("الإنجاز العام",{x:0.55,y:4.5,w:2.4,h:0.26,fontSize:10,color:C.muted,fontFace:"Arial",align:"center"});
+    s.addShape(prs.ShapeType.rect,{x:3.15,y:4.1,w:2.4,h:0.7,fill:{color:C.rowA},line:{color:C.line,width:1}});
+    s.addText(String(critical.length),{x:3.15,y:4.12,w:2.4,h:0.36,fontSize:22,bold:true,color:C.red,fontFace:"Arial",align:"center"});
+    s.addText("مخاطر حرجة",{x:3.15,y:4.5,w:2.4,h:0.26,fontSize:10,color:C.muted,fontFace:"Arial",align:"center"});
+    s.addShape(prs.ShapeType.rect,{x:5.75,y:4.1,w:2.4,h:0.7,fill:{color:C.rowA},line:{color:C.line,width:1}});
+    s.addText(String(tracks.length),{x:5.75,y:4.12,w:2.4,h:0.36,fontSize:22,bold:true,color:C.blue,fontFace:"Arial",align:"center"});
+    s.addText("المسارات",{x:5.75,y:4.5,w:2.4,h:0.26,fontSize:10,color:C.muted,fontFace:"Arial",align:"center"});
+    s.addShape(prs.ShapeType.rect,{x:8.35,y:4.1,w:2.4,h:0.7,fill:{color:C.rowA},line:{color:C.line,width:1}});
+    s.addText(String(items.length),{x:8.35,y:4.12,w:2.4,h:0.36,fontSize:22,bold:true,color:C.white,fontFace:"Arial",align:"center"});
+    s.addText("إجمالي العناصر",{x:8.35,y:4.5,w:2.4,h:0.26,fontSize:10,color:C.muted,fontFace:"Arial",align:"center"});
+    s.addText(`التاريخ: ${today}  |  الأسبوع: ${weekNum}  |  أُعدّ تلقائياً من بيانات المنصة`,
+      {x:0.55,y:6.7,w:12.4,h:0.3,fontSize:10,color:C.muted,fontFace:"Arial",align:"right"});
+    footer(s);
+  }
+
+  // ══ ملخص المؤشرات ══
+  function summarySlide(){
+    const s=prs.addSlide(); bg(s);
+    addHeader(s,"ملخص المؤشرات التنفيذية",
+      `الإنجاز: ${overall}%  |  المسارات: ${tracks.length}  |  المهام: ${items.length}  |  المخاطر: ${risks.length}`);
+    addKpis(s,[
+      {l:"الإنجاز العام",    v:overall+"%",            c:overall>=70?C.green:overall>=45?C.amber:C.red},
+      {l:"مهام منجزة",       v:doneItems.length,        c:C.green},
+      {l:"قيد التنفيذ",      v:actItems.length,         c:C.amber},
+      {l:"متأخرة",           v:overdue.length,          c:C.red},
+      {l:"مخاطر كلية",      v:risks.length,            c:C.amber},
+      {l:"مخاطر حرجة",      v:critical.length,         c:C.red},
+    ],1.3);
+    secLabel(s,"أداء المسارات",2.25);
+    addTable(s,
+      ["المسار","الاسم","الإنجاز%","المخطط%","مهام","منجز","نشط","مخاطر","الحالة","المالك"],
+      tracks.map(t=>[t.id||"",t.name||"",`${t.progress||0}%`,`${t.planned||80}%`,
+        t.tasks||0,t.done||0,t.active||0,t.risk||0,t.status||"—",t.lead||"—"]),
+      2.52,[0.45,1.85,0.75,0.75,0.65,0.65,0.65,0.65,1.55,1.6]
+    );
+    footer(s);
+  }
+
+  // ══ شريحة المخاطر ══
+  function risksSlide(){
+    const s=prs.addSlide(); bg(s);
+    addHeader(s,"المخاطر والقرارات",`مخاطر مفتوحة: ${risks.length}  |  حرجة: ${critical.length}  |  متأخرة: ${overdue.length}`);
+    addKpis(s,[
+      {l:"مخاطر مفتوحة",    v:risks.length,    c:C.amber},
+      {l:"حرجة",             v:critical.length, c:C.red},
+      {l:"تحت المتابعة",    v:risks.filter(r=>/متابعة|قيد/.test(r.status||"")).length, c:C.amber},
+      {l:"مهام متأخرة",     v:overdue.length,  c:C.red},
+    ],1.3);
+    secLabel(s,"سجل المخاطر",2.25);
+    addTable(s,
+      ["المخاطرة","المسار","المالك","الحالة","الموعد"],
+      risks.length
+        ? risks.map(r=>[clip(r.title),r.track||"",r.owner||"—",r.status||"—",fmtD(r.due)])
+        : [["لا توجد مخاطر مفتوحة","","","",""]],
+      2.52,[4.2,1.5,1.9,1.75,1.4]
+    );
+    footer(s);
+  }
+
+  // ══ شريحة المهام ══
+  function actionsSlide(trackId=null){
+    const s=prs.addSlide(); bg(s);
+    const src = trackId
+      ? items.filter(i=>(i.track===trackId||i.track===tracks.find(t=>t.id===trackId)?.name))
+      : items;
+    const od = src.filter(i=>!isDone(i)&&i.due&&i.due<today);
+    addHeader(s, trackId?`مهام مسار ${trackId}`:"المهام والإجراءات",
+      `إجمالي: ${src.length}  |  منجز: ${src.filter(isDone).length}  |  نشط: ${src.filter(isActive).length}  |  متأخر: ${od.length}`);
+    addKpis(s,[
+      {l:"إجمالي",  v:src.length,                    c:C.white},
+      {l:"منجز",    v:src.filter(isDone).length,      c:C.green},
+      {l:"نشط",     v:src.filter(isActive).length,    c:C.amber},
+      {l:"متأخر",   v:od.length,                      c:C.red},
+    ],1.3);
+    secLabel(s,"قائمة المهام",2.25);
+    addTable(s,
+      ["المهمة","المسار","المالك","الحالة","الموعد","التقدم%"],
+      src.length
+        ? src.map(i=>[clip(i.title),i.track||"",i.owner||"—",i.status||"—",fmtD(i.due),`${i.progress||0}%`])
+        : [["لا توجد مهام","","","","",""]],
+      2.52,[4.2,1.3,1.8,1.65,1.35,1.0]
+    );
+    footer(s);
+  }
+
+  // ══ شريحة الاعتمادات ══
+  function approvalsSlide(){
+    const s=prs.addSlide(); bg(s);
+    const appr = state.management?.approvals || items.filter(i=>i.type==="permits"||/اعتماد/.test(i.title||""));
+    const late  = appr.filter(a=>a.due&&a.due<today&&!isDone(a));
+    addHeader(s,"الاعتمادات والتصعيد",`إجمالي: ${appr.length}  |  متأخرة: ${late.length}`);
+    addKpis(s,[
+      {l:"إجمالي الاعتمادات",  v:appr.length,   c:C.white},
+      {l:"متأخرة",              v:late.length,   c:C.red},
+      {l:"معتمدة",              v:appr.filter(isDone).length, c:C.green},
+      {l:"قيد الاعتماد",        v:appr.filter(a=>!isDone(a)&&!late.includes(a)).length, c:C.amber},
+    ],1.3);
+    secLabel(s,"سجل الاعتمادات",2.25);
+    const rows = appr.length
+      ? appr.map(a=>[clip(a.title),a.track||"",a.owner||"—",a.status||"—",fmtD(a.due),a.type||"—"])
+      : [["لا توجد اعتمادات بانتظار الإجراء","","","","",""]];
+    addTable(s,["الاعتماد","المسار","المالك","الحالة","الموعد","النوع"],rows,2.52,[3.8,1.4,1.8,1.65,1.35,1.0]);
+    footer(s);
+  }
+
+  // ══ شريحة الأدلة ══
+  function evidenceSlide(){
+    const s=prs.addSlide(); bg(s);
+    const fe = state.management?.fieldEvidence || doneItems;
+    addHeader(s,"الأدلة الميدانية والإغلاقات",`مهام مغلقة: ${doneItems.length}  |  نسبة الإغلاق: ${items.length?Math.round(doneItems.length*100/items.length):0}%`);
+    addKpis(s,[
+      {l:"مهام مغلقة",    v:doneItems.length,    c:C.green},
+      {l:"إجمالي المهام", v:items.length,        c:C.white},
+      {l:"نسبة الإغلاق",  v:(items.length?Math.round(doneItems.length*100/items.length):0)+"%", c:C.green},
+      {l:"مخاطر مفتوحة", v:risks.length,        c:C.amber},
+    ],1.3);
+    secLabel(s,"المهام المغلقة — أدلة الإغلاق",2.25);
+    const rows = doneItems.length
+      ? doneItems.slice(0,12).map(i=>[clip(i.title),i.track||"",i.owner||"—",i.status||"—",fmtD(i.due)])
+      : [["لا توجد مهام مغلقة حتى الآن","","","",""]];
+    addTable(s,["المهمة","المسار","المالك","الحالة","تاريخ الإغلاق"],rows,2.52,[4.2,1.5,1.9,1.75,1.4]);
+    footer(s);
+  }
+
+  // ══ شريحة مسار واحد ══
+  function trackSlide(track){
+    const s=prs.addSlide(); bg(s);
+    const tid  = track.id||track.name;
+    const ti   = items.filter(i=>i.track===tid||i.track===track.name||i.track===track.id);
+    const tR   = ti.filter(isRisk);
+    const colorP = (track.progress||0)>=70?C.green:(track.progress||0)>=45?C.amber:C.red;
+    addHeader(s,`مسار ${track.id||""} — ${track.name||""}`,
+      `الإنجاز: ${track.progress||0}%  |  المهام: ${ti.length}  |  المخاطر: ${tR.length}  |  الحالة: ${track.status||"—"}`);
+    addKpis(s,[
+      {l:"الإنجاز",  v:`${track.progress||0}%`, c:colorP},
+      {l:"المخطط",   v:`${track.planned||80}%`, c:C.muted},
+      {l:"منجز",     v:ti.filter(isDone).length, c:C.green},
+      {l:"نشط",      v:ti.filter(isActive).length,c:C.amber},
+      {l:"مخاطر",    v:tR.length,                c:C.red},
+      {l:"الحالة",   v:track.status||"—",         c:C.white},
+    ],1.3);
+    secLabel(s,"مهام المسار",2.25);
+    addTable(s,
+      ["المهمة","المالك","الحالة","الموعد","التقدم%","النوع"],
+      ti.length
+        ? ti.slice(0,12).map(i=>[clip(i.title),i.owner||"—",i.status||"—",fmtD(i.due),`${i.progress||0}%`,i.type||"—"])
+        : [["لا توجد بيانات لهذا المسار","","","","",""]],
+      2.52,[4.2,1.8,1.65,1.35,0.9,1.38]
+    );
+    footer(s);
+  }
+
+  // ══ بناء التقرير حسب النوع ══
+  if(reportType==="daily_ops"){
+    coverSlide("تقرير غرفة العمليات اليومي",`الأسبوع ${weekNum} | ${today}`);
+    summarySlide(); actionsSlide(); risksSlide();
+  } else if(reportType==="executive"){
+    coverSlide("تقرير اللجنة التنفيذية",`الإنجاز العام: ${overall}%`);
+    summarySlide(); risksSlide(); approvalsSlide();
+  } else if(reportType==="approvals"){
+    coverSlide("تقرير الاعتمادات والتصعيد",`متأخرة: ${items.filter(i=>i.due&&i.due<today&&!isDone(i)).length}`);
+    approvalsSlide(); risksSlide(); actionsSlide();
+  } else if(reportType==="evidence"){
+    coverSlide("تقرير الأدلة الميدانية",`مهام مغلقة: ${doneItems.length}`);
+    evidenceSlide(); actionsSlide();
+  } else if(/^[أبجدهو]$/.test(reportType)){
+    const track = tracks.find(t=>t.id===reportType)||{id:reportType,name:reportType,progress:0};
+    coverSlide(`تقرير مسار ${reportType}`,track.name||"");
+    trackSlide(track); actionsSlide(reportType); risksSlide();
+  } else {
+    // comprehensive — جميع المسارات
+    coverSlide("التقرير الشامل",`${tracks.length} مسار | ${items.length} عنصر`);
+    summarySlide(); risksSlide(); approvalsSlide(); evidenceSlide(); actionsSlide();
+    tracks.forEach(t=>trackSlide(t));
+  }
+
+  // إنتاج PPTX buffer
+  const pptxBuf = await prs.write({outputType:"nodebuffer"});
+
+  // إذا طُلب PDF: نُرسل PPTX مع Content-Type صحيح ونُبلّغ الواجهة
+  // (LibreOffice غير متاح على Render Free — نُرجع PPTX دائماً)
+  return { buf: pptxBuf, format: "pptx" };
 }
 function deploymentCheck(name, ok, weight, recommendation){ return {name, ok:!!ok, weight:Number(weight||1), recommendation: recommendation||""}; }
 function computeDeploymentReadiness(){
@@ -892,7 +1130,7 @@ function computeGoLiveControl(req){
     {day:"اليوم 2", output:"إرسال إشعارات فعلية لمديري المسارات", meeting:"متابعة الإشعارات", measure:"كل إشعار يتحول إلى مهمة"},
     {day:"اليوم 3", output:"إغلاق مهام بدليل", meeting:"مراجعة الأدلة", measure:"70% من الإغلاقات لها دليل"},
     {day:"اليوم 4", output:"اختبار التصعيد والاعتمادات", meeting:"جلسة قرارات", measure:"إغلاق اعتمادين أو توثيق سبب التأخير"},
-    {day:"اليوم 5", output:"توليد تقرير تشغيلي", meeting:"عرض داخلي", measure:"تقرير PDF/PPTX أو CSV جاهز للإرسال"},
+    {day:"اليوم 5", output:"توليد تقرير تشغيلي", meeting:"عرض داخلي", measure:"تقرير PDF أو PowerPoint جاهز للإرسال"},
     {day:"اليوم 6", output:"اختبار الجوال وPWA", meeting:"تجربة مستخدم", measure:"القائمة والبطاقات واضحة على iPhone/Android"},
     {day:"اليوم 7", output:"اعتماد النسخة المستقرة", meeting:"Go-Live Review", measure:"درجة الإطلاق فوق 90%"}
   ];
@@ -1328,21 +1566,11 @@ const server=http.createServer(async (req,res)=>{
       if(!liveState) return sendJson(res,503,{error:"البيانات غير متاحة بعد"});
       try{
         const reportState = composeReportState(req);
-        const pptxBuf = await runPythonReport(reportType, reportState);
-        let finalBuf = pptxBuf;
-        if(format === "pdf"){
-          // القوالب الكبيرة قد تستغرق وقتًا طويلًا في LibreOffice على بيئات Render؛ لذلك نستخدم مولّد PDF مباشر عند الحاجة.
-          if(pptxBuf.length > 2 * 1024 * 1024){
-            finalBuf = await runPythonPdfReport(reportType, reportState);
-          }else{
-            try{ finalBuf = await convertPptxToPdf(pptxBuf); }
-            catch(_pdfErr){ finalBuf = await runPythonPdfReport(reportType, reportState); }
-          }
-        }
-        const fname = asciiReportName(reportType, format);
-        addAudit(req, `توليد تقرير ${format.toUpperCase()}`, "report", {type:reportType, format, bytes:finalBuf.length});
+        const {buf: finalBuf, format: actualFormat} = await generateNodeReport(reportType, format, reportState);
+        const fname = asciiReportName(reportType, actualFormat);
+        addAudit(req, `توليد تقرير ${actualFormat.toUpperCase()}`, "report", {type:reportType, format:actualFormat, bytes:finalBuf.length});
         res.writeHead(200,{
-          "Content-Type": reportContentType(format),
+          "Content-Type": reportContentType(actualFormat),
           "Content-Disposition":`attachment; filename="${fname}"`,
           "Content-Length": finalBuf.length,
           "Cache-Control":"no-store"

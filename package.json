@@ -1,16 +1,15 @@
 {
   "name": "kag-operational-project-management-platform-confirmed",
-  "version": "1000.8.2",
+  "version": "1000.8.0",
   "private": true,
-  "description": "KAG Operational Platform — PDF/PPTX reports hardened with Python dependency bootstrap",
+  "description": "KAG Operational Project Management Platform — official PDF and PowerPoint report output with no end-user Excel exports",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "check": "node --check server.js && node --check public/script.js && node scripts/verify-package.js",
     "health": "node -e \"require('fs').accessSync('server.js'); console.log('ok')\"",
     "smoke": "node scripts/smoke-test.js",
-    "verify": "node scripts/verify-package.js && python3 -c \"import pptx, reportlab; print('python-report-deps-ok')\"",
-    "postinstall": "python3 -m pip install --user -r requirements.txt || python -m pip install --user -r requirements.txt || true"
+    "verify": "node scripts/verify-package.js"
   },
   "engines": {
     "node": ">=18"
