@@ -749,7 +749,6 @@ function sendText(res,status,text,type="text/plain; charset=utf-8",headers={}){
   res.writeHead(status, Object.assign({"Content-Type":type,"Cache-Control":"no-store"}, headers));
   return res.end(text);
 }
-
 function reportContentType(format){
   return format === "pdf"
     ? "application/pdf"
@@ -893,7 +892,7 @@ function computeGoLiveControl(req){
     {day:"اليوم 2", output:"إرسال إشعارات فعلية لمديري المسارات", meeting:"متابعة الإشعارات", measure:"كل إشعار يتحول إلى مهمة"},
     {day:"اليوم 3", output:"إغلاق مهام بدليل", meeting:"مراجعة الأدلة", measure:"70% من الإغلاقات لها دليل"},
     {day:"اليوم 4", output:"اختبار التصعيد والاعتمادات", meeting:"جلسة قرارات", measure:"إغلاق اعتمادين أو توثيق سبب التأخير"},
-    {day:"اليوم 5", output:"توليد تقرير تشغيلي", meeting:"عرض داخلي", measure:"تقرير PDF أو PowerPoint جاهز للإرسال"},
+    {day:"اليوم 5", output:"توليد تقرير تشغيلي", meeting:"عرض داخلي", measure:"تقرير PDF/PPTX أو CSV جاهز للإرسال"},
     {day:"اليوم 6", output:"اختبار الجوال وPWA", meeting:"تجربة مستخدم", measure:"القائمة والبطاقات واضحة على iPhone/Android"},
     {day:"اليوم 7", output:"اعتماد النسخة المستقرة", meeting:"Go-Live Review", measure:"درجة الإطلاق فوق 90%"}
   ];

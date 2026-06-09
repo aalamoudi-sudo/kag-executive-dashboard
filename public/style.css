@@ -159,9 +159,3 @@ body:before{opacity:.42}
 .risk-badges b{background:rgba(224,82,101,.115)!important;color:#FFB0BD!important}.risk-badges span{background:rgba(214,166,74,.12)!important;color:#F4D391!important}
 .data-table th{background:rgba(183,234,245,.040)!important;color:#D8F5FF!important}.data-table td,.data-table th{border-bottom-color:rgba(183,234,245,.075)!important}
 .toast{background:linear-gradient(135deg,#0D2135,#07111D)!important;border-color:rgba(183,234,245,.22)!important;box-shadow:0 18px 64px rgba(0,0,0,.46),0 0 24px rgba(79,216,246,.10)!important}
-
-/* تقارير PDF / PowerPoint */
-.report-actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px}
-.report-actions .btn-link,.report-actions .customize{min-height:38px}
-.full-report-actions{margin-top:6px}
-@media(max-width:700px){.report-actions{flex-direction:column;align-items:stretch}.report-actions .btn-link,.report-actions .customize{width:100%;justify-content:center;text-align:center}}
