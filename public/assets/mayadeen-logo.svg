@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="260" height="86" viewBox="0 0 260 86">
+  <rect width="260" height="86" rx="18" fill="#100D1C" opacity="0.72"/>
+  <rect x="3" y="3" width="254" height="80" rx="16" fill="none" stroke="#D8CCFF" stroke-width="2"/>
+  <text x="130" y="48" text-anchor="middle" font-family="Arial, sans-serif" font-size="30" font-weight="700" fill="#D8CCFF">ميادين</text>
+  <text x="130" y="68" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="#9AB8C1">MAYADEEN</text>
+</svg>

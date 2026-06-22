@@ -1,0 +1,24 @@
+{
+  "name": "منصة إدارة ومتابعة مشروع حدائق الملك عبدالله",
+  "short_name": "KAG Platform",
+  "lang": "ar",
+  "dir": "rtl",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#06111F",
+  "theme_color": "#06111F",
+  "description": "منصة تشغيلية لمتابعة المسارات والمهام والإشعارات والتقارير.",
+  "icons": [
+    {
+      "src": "/assets/riyadh-amanah-official.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/assets/riyadh-amanah-official.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
